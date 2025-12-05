@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import messagebox
 from typing import Optional
 
 from . import storage
@@ -18,142 +18,47 @@ class TaskApp:
         self.db_path = db_path
         storage.init_db(db_path)
         self.root.title("Task Tracker Desktop")
-        self.root.geometry("760x560")
-        self.root.configure(bg="#0f172a")
-        self._apply_theme()
+        self.root.geometry("640x480")
         self._build_ui()
         self.refresh_tasks()
         self._schedule_reminder_check()
 
-    def _apply_theme(self) -> None:
-        accent = "#2563eb"
-        surface = "#1e293b"
-        text_muted = "#cbd5e1"
-        style = ttk.Style(self.root)
-        style.theme_use("clam")
-        style.configure("App.TFrame", background=surface)
-        style.configure("App.TLabel", background=surface, foreground=text_muted, font=("Inter", 10))
-        style.configure("App.Heading.TLabel", background=surface, foreground="white", font=("Inter", 12, "bold"))
-        style.configure(
-            "Primary.TButton",
-            background=accent,
-            foreground="white",
-            padding=(12, 8),
-            font=("Inter", 10, "bold"),
-            relief="flat",
-            borderwidth=0,
-        )
-        style.map(
-            "Primary.TButton",
-            background=[("active", "#1d4ed8"), ("disabled", "#475569")],
-            foreground=[("disabled", "#94a3b8")],
-        )
-        style.configure(
-            "Secondary.TButton",
-            background="#334155",
-            foreground=text_muted,
-            padding=(10, 6),
-            font=("Inter", 10),
-            relief="flat",
-            borderwidth=0,
-        )
-        style.map(
-            "Secondary.TButton",
-            background=[("active", "#1f2937")],
-            foreground=[("active", "white")],
-        )
-        style.configure(
-            "Modern.Treeview",
-            background=surface,
-            fieldbackground=surface,
-            foreground="white",
-            bordercolor=surface,
-            rowheight=30,
-            font=("Inter", 10),
-        )
-        style.configure("Modern.Treeview.Heading", background=surface, foreground=text_muted, font=("Inter", 10, "bold"))
-        style.map("Treeview", background=[("selected", "#1d4ed8")], foreground=[("selected", "white")])
-        style.configure(
-            "App.TCheckbutton",
-            background=surface,
-            foreground=text_muted,
-            font=("Inter", 10),
-            focuscolor=surface,
-        )
-
     def _build_ui(self) -> None:
-        container = ttk.Frame(self.root, style="App.TFrame")
-        container.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        entry_frame = tk.Frame(self.root)
+        entry_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        header = ttk.Label(container, text="Задачи", style="App.Heading.TLabel")
-        header.pack(anchor=tk.W)
-
-        entry_frame = ttk.Frame(container, style="App.TFrame")
-        entry_frame.pack(fill=tk.X, pady=(12, 10))
-
-        self.task_entry = ttk.Entry(entry_frame, font=("Inter", 11))
+        self.task_entry = tk.Entry(entry_frame)
         self.task_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.task_entry.bind("<Return>", lambda _: self.add_task())
 
-        add_btn = ttk.Button(entry_frame, text="Добавить", command=self.add_task, style="Primary.TButton")
-        add_btn.pack(side=tk.LEFT, padx=(8, 0))
+        add_btn = tk.Button(entry_frame, text="Добавить", command=self.add_task)
+        add_btn.pack(side=tk.LEFT, padx=(5, 0))
 
-        list_frame = ttk.Frame(container, style="App.TFrame")
-        list_frame.pack(fill=tk.BOTH, expand=True)
+        self.tasks_listbox = tk.Listbox(self.root)
+        self.tasks_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        columns = ("title", "status", "reminder", "progress")
-        self.tasks_tree = ttk.Treeview(
-            list_frame,
-            columns=columns,
-            show="headings",
-            style="Modern.Treeview",
-            selectmode="browse",
-        )
-        self.tasks_tree.heading("title", text="Задача")
-        self.tasks_tree.heading("status", text="Статус")
-        self.tasks_tree.heading("reminder", text="Напоминание")
-        self.tasks_tree.heading("progress", text="Подзадачи")
-        self.tasks_tree.column("title", width=320, anchor=tk.W)
-        self.tasks_tree.column("status", width=100, anchor=tk.CENTER)
-        self.tasks_tree.column("reminder", width=140, anchor=tk.CENTER)
-        self.tasks_tree.column("progress", width=120, anchor=tk.CENTER)
-        self.tasks_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
-
-        self.tasks_tree.bind("<Double-1>", lambda _: self.open_task())
-
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tasks_tree.yview)
-        self.tasks_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        btn_frame = ttk.Frame(container, style="App.TFrame")
-        btn_frame.pack(fill=tk.X, pady=(10, 0))
-        ttk.Button(btn_frame, text="Открыть", command=self.open_task, style="Secondary.TButton").pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Готово/Не готово", command=self.toggle_task, style="Secondary.TButton").pack(
-            side=tk.LEFT, padx=6
-        )
-        ttk.Button(btn_frame, text="Удалить", command=self.delete_task, style="Secondary.TButton").pack(side=tk.LEFT)
+        btn_frame = tk.Frame(self.root)
+        btn_frame.pack(fill=tk.X, padx=10, pady=5)
+        tk.Button(btn_frame, text="Открыть", command=self.open_task).pack(side=tk.LEFT)
+        tk.Button(btn_frame, text="Готово/Не готово", command=self.toggle_task).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Удалить", command=self.delete_task).pack(side=tk.LEFT)
 
     def refresh_tasks(self) -> None:
-        self.tasks_tree.delete(*self.tasks_tree.get_children())
+        self.tasks_listbox.delete(0, tk.END)
         tasks = storage.list_tasks(self.db_path)
-        self._tasks_cache = {task.id: task for task in tasks}
         for task in tasks:
             progress = storage.subtask_progress(self.db_path, task.id)
-            reminder_text = task.reminder_datetime.strftime("%d %b %H:%M") if task.reminder_datetime else "—"
-            status_text = "Готово" if task.is_done else "В работе"
-            self.tasks_tree.insert(
-                "",
-                tk.END,
-                iid=str(task.id),
-                values=(task.title, status_text, reminder_text, f"{progress[0]} / {progress[1]}")
-            )
+            reminder_flag = " ⏰" if task.reminder_datetime else ""
+            label = f"[{'✓' if task.is_done else ' '}] {task.title}{reminder_flag} ({progress[0]}/{progress[1]})"
+            self.tasks_listbox.insert(tk.END, label)
+        self._tasks_cache = tasks
 
     def _selected_task(self) -> Optional[Task]:
-        selection = self.tasks_tree.selection()
+        selection = self.tasks_listbox.curselection()
         if not selection:
             return None
-        task_id = int(selection[0])
-        return self._tasks_cache.get(task_id)
+        index = selection[0]
+        return self._tasks_cache[index]
 
     def add_task(self) -> None:
         title = self.task_entry.get().strip()
@@ -205,69 +110,49 @@ class TaskDetail:
     def __init__(self, app: TaskApp, task: Task):
         self.app = app
         self.task = task
-        self.window = tk.Toplevel(app.root, bg="#0f172a")
+        self.window = tk.Toplevel(app.root)
         self.window.title(task.title)
         self._build_ui()
         self.refresh_subtasks()
 
     def _build_ui(self) -> None:
-        container = ttk.Frame(self.window, style="App.TFrame")
-        container.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
-
-        ttk.Label(container, text="Заголовок", style="App.Heading.TLabel").pack(anchor=tk.W)
-        self.title_entry = ttk.Entry(container, font=("Inter", 11))
+        tk.Label(self.window, text="Заголовок:").pack(anchor=tk.W, padx=10, pady=(10, 0))
+        self.title_entry = tk.Entry(self.window)
         self.title_entry.insert(0, self.task.title)
-        self.title_entry.pack(fill=tk.X, pady=(4, 10))
+        self.title_entry.pack(fill=tk.X, padx=10)
 
         self.status_var = tk.BooleanVar(value=self.task.is_done)
-        ttk.Checkbutton(
-            container,
-            text="Задача выполнена",
-            variable=self.status_var,
-            command=self._on_status_change,
-            style="App.TCheckbutton",
-        ).pack(anchor=tk.W, pady=(0, 12))
+        tk.Checkbutton(self.window, text="Задача выполнена", variable=self.status_var, command=self._on_status_change).pack(
+            anchor=tk.W, padx=10, pady=5
+        )
 
-        reminder_frame = ttk.Frame(container, style="App.TFrame")
-        reminder_frame.pack(fill=tk.X, pady=(0, 12))
-        ttk.Label(reminder_frame, text="Напоминание (YYYY-MM-DD HH:MM)", style="App.TLabel").pack(anchor=tk.W)
-        self.reminder_entry = ttk.Entry(reminder_frame, font=("Inter", 11))
+        reminder_frame = tk.Frame(self.window)
+        reminder_frame.pack(fill=tk.X, padx=10, pady=5)
+        tk.Label(reminder_frame, text="Напоминание (YYYY-MM-DD HH:MM):").pack(anchor=tk.W)
+        self.reminder_entry = tk.Entry(reminder_frame)
         if self.task.reminder_datetime:
             self.reminder_entry.insert(0, self.task.reminder_datetime.strftime("%Y-%m-%d %H:%M"))
-        self.reminder_entry.pack(fill=tk.X, pady=4)
+        self.reminder_entry.pack(fill=tk.X)
+        tk.Button(reminder_frame, text="Сохранить напоминание", command=self.save_reminder).pack(side=tk.LEFT, pady=5)
+        tk.Button(reminder_frame, text="Удалить", command=self.clear_reminder).pack(side=tk.LEFT, padx=5, pady=5)
 
-        reminder_buttons = ttk.Frame(reminder_frame, style="App.TFrame")
-        reminder_buttons.pack(anchor=tk.W)
-        ttk.Button(reminder_buttons, text="Сохранить", command=self.save_reminder, style="Primary.TButton").pack(side=tk.LEFT)
-        ttk.Button(reminder_buttons, text="Удалить", command=self.clear_reminder, style="Secondary.TButton").pack(
-            side=tk.LEFT, padx=8
-        )
+        tk.Button(self.window, text="Сохранить заголовок", command=self.save_title).pack(anchor=tk.W, padx=10, pady=5)
 
-        ttk.Button(container, text="Сохранить заголовок", command=self.save_title, style="Secondary.TButton").pack(
-            anchor=tk.W, pady=(0, 14)
-        )
+        tk.Label(self.window, text="Подзадачи:").pack(anchor=tk.W, padx=10, pady=(10, 0))
+        self.subtask_list = tk.Listbox(self.window)
+        self.subtask_list.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        ttk.Label(container, text="Подзадачи", style="App.Heading.TLabel").pack(anchor=tk.W)
-        self.subtask_list = tk.Listbox(container, height=8, bg="#0f172a", fg="white", selectbackground="#1d4ed8")
-        self.subtask_list.pack(fill=tk.BOTH, expand=True, pady=(6, 8))
+        subtask_controls = tk.Frame(self.window)
+        subtask_controls.pack(fill=tk.X, padx=10, pady=5)
+        tk.Button(subtask_controls, text="Готово/Не готово", command=self.toggle_subtask).pack(side=tk.LEFT)
+        tk.Button(subtask_controls, text="Удалить", command=self.delete_subtask).pack(side=tk.LEFT, padx=5)
 
-        subtask_controls = ttk.Frame(container, style="App.TFrame")
-        subtask_controls.pack(fill=tk.X, pady=(0, 10))
-        ttk.Button(subtask_controls, text="Готово/Не готово", command=self.toggle_subtask, style="Secondary.TButton").pack(
-            side=tk.LEFT
-        )
-        ttk.Button(subtask_controls, text="Удалить", command=self.delete_subtask, style="Secondary.TButton").pack(
-            side=tk.LEFT, padx=8
-        )
-
-        add_frame = ttk.Frame(container, style="App.TFrame")
-        add_frame.pack(fill=tk.X)
-        self.subtask_entry = ttk.Entry(add_frame, font=("Inter", 11))
+        add_frame = tk.Frame(self.window)
+        add_frame.pack(fill=tk.X, padx=10, pady=5)
+        self.subtask_entry = tk.Entry(add_frame)
         self.subtask_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.subtask_entry.bind("<Return>", lambda _: self.add_subtask())
-        ttk.Button(add_frame, text="Добавить подзадачу", command=self.add_subtask, style="Primary.TButton").pack(
-            side=tk.LEFT, padx=8
-        )
+        tk.Button(add_frame, text="Добавить подзадачу", command=self.add_subtask).pack(side=tk.LEFT, padx=5)
 
     def refresh_subtasks(self) -> None:
         self.task = storage.get_task(self.app.db_path, self.task.id) or self.task
