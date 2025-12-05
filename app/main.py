@@ -119,6 +119,8 @@ class TaskApp:
         self.tasks_tree.column("progress", width=120, anchor=tk.CENTER)
         self.tasks_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
 
+        self.tasks_tree.bind("<Double-1>", lambda _: self.open_task())
+
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tasks_tree.yview)
         self.tasks_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
