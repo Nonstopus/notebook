@@ -50,3 +50,17 @@ def test_due_reminders(tmp_path):
     due = list(storage.due_reminders(db_path, now=datetime.utcnow()))
     assert len(due) == 1
     assert due[0].title == "Прошлое"
+
+
+def test_search_by_title_and_note(tmp_path):
+    db_path = temp_db(tmp_path)
+    storage.create_task(db_path, "Купить молоко")
+    storage.create_task(db_path, "Подготовка", note="срочно позвонить клиенту")
+
+    by_title = storage.list_tasks(db_path, search="молоко")
+    assert len(by_title) == 1
+    assert by_title[0].title == "Купить молоко"
+
+    by_note = storage.list_tasks(db_path, search="клиенту")
+    assert len(by_note) == 1
+    assert by_note[0].title == "Подготовка"

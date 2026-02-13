@@ -112,8 +112,9 @@ def list_tasks(
     clauses: List[str] = []
     values: List[object] = []
     if search:
-        clauses.append("title LIKE ?")
-        values.append(f"%{search}%")
+        clauses.append("(title LIKE ? OR COALESCE(note, '') LIKE ?)")
+        pattern = f"%{search}%"
+        values.extend([pattern, pattern])
     if has_reminder is not None:
         if has_reminder:
             clauses.append("reminder_datetime IS NOT NULL")
