@@ -64,3 +64,60 @@ def test_search_by_title_and_note(tmp_path):
     by_note = storage.list_tasks(db_path, search="клиенту")
     assert len(by_note) == 1
     assert by_note[0].title == "Подготовка"
+
+
+
+def test_create_and_list_task_links(tmp_path):
+    db_path = temp_db(tmp_path)
+    t1 = storage.create_task(db_path, "A")
+    t2 = storage.create_task(db_path, "B")
+
+    link = storage.create_task_link(db_path, t1.id, t2.id)
+
+    links = storage.list_task_links(db_path)
+    assert len(links) == 1
+    assert links[0].id == link.id
+    assert links[0].from_task_id == t1.id
+    assert links[0].to_task_id == t2.id
+    assert links[0].link_type == "sequence"
+
+
+
+def test_task_link_constraints_and_delete(tmp_path):
+    import sqlite3
+
+    db_path = temp_db(tmp_path)
+    t1 = storage.create_task(db_path, "A")
+    t2 = storage.create_task(db_path, "B")
+
+    storage.create_task_link(db_path, t1.id, t2.id, link_type="dependency")
+
+    try:
+        storage.create_task_link(db_path, t1.id, t2.id)
+        assert False, "Expected duplicate link to fail"
+    except sqlite3.IntegrityError:
+        pass
+
+    try:
+        storage.create_task_link(db_path, t1.id, t1.id)
+        assert False, "Expected self link to fail"
+    except sqlite3.IntegrityError:
+        pass
+
+    assert storage.delete_task_link(db_path, from_task_id=t1.id, to_task_id=t2.id)
+    assert storage.list_task_links(db_path) == []
+
+
+
+def test_task_link_deleted_with_task(tmp_path):
+    db_path = temp_db(tmp_path)
+    t1 = storage.create_task(db_path, "A")
+    t2 = storage.create_task(db_path, "B")
+    link = storage.create_task_link(db_path, t1.id, t2.id)
+
+    assert storage.delete_task_link(db_path, link.id)
+
+    link2 = storage.create_task_link(db_path, t1.id, t2.id)
+    storage.delete_task(db_path, t1.id)
+
+    assert not storage.delete_task_link(db_path, link2.id)
