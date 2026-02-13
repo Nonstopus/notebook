@@ -64,3 +64,35 @@ def test_search_by_title_and_note(tmp_path):
     by_note = storage.list_tasks(db_path, search="клиенту")
     assert len(by_note) == 1
     assert by_note[0].title == "Подготовка"
+
+
+def test_task_links_and_cycle_check(tmp_path):
+    db_path = temp_db(tmp_path)
+    first = storage.create_task(db_path, "A")
+    second = storage.create_task(db_path, "B")
+    third = storage.create_task(db_path, "C")
+
+    storage.create_task_link(db_path, first.id, second.id)
+    storage.create_task_link(db_path, second.id, third.id)
+
+    links = storage.list_task_links(db_path)
+    assert len(links) == 2
+
+    try:
+        storage.create_task_link(db_path, third.id, first.id)
+    except ValueError as exc:
+        assert "цикл" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for cycle")
+
+
+def test_delete_task_link_by_pair_and_id(tmp_path):
+    db_path = temp_db(tmp_path)
+    first = storage.create_task(db_path, "A")
+    second = storage.create_task(db_path, "B")
+
+    link = storage.create_task_link(db_path, first.id, second.id)
+    assert storage.delete_task_link(db_path, from_task_id=first.id, to_task_id=second.id)
+
+    link = storage.create_task_link(db_path, first.id, second.id)
+    assert storage.delete_task_link(db_path, link_id=link.id)

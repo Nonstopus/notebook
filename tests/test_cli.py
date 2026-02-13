@@ -10,9 +10,10 @@ def run_cli(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_cli_add_and_list(tmp_path):
-    run_cli(tmp_path, "add", "Купить молоко")
+    run_cli(tmp_path, "add", "Купить молоко", "--due-datetime", "2030-01-01 10:00")
     result = run_cli(tmp_path, "list")
     assert "Купить молоко" in result.stdout
+    assert "due_datetime=2030-01-01 10:00" in result.stdout
 
 
 def test_cli_done_and_delete(tmp_path):
@@ -31,3 +32,16 @@ def test_cli_search(tmp_path):
     result = run_cli(tmp_path, "list", "--search", "молоко")
     assert "Купить молоко" in result.stdout
     assert "Позвонить маме" not in result.stdout
+
+
+def test_cli_links(tmp_path):
+    run_cli(tmp_path, "add", "Шаг 1")
+    run_cli(tmp_path, "add", "Шаг 2")
+    added = run_cli(tmp_path, "link", "add", "1", "2")
+    assert "Связь добавлена" in added.stdout
+
+    listed = run_cli(tmp_path, "link", "list")
+    assert "1 -> 2" in listed.stdout
+
+    deleted = run_cli(tmp_path, "link", "delete", "1", "2")
+    assert "Связь удалена" in deleted.stdout

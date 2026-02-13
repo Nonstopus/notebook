@@ -5,9 +5,9 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Set, Tuple
 
-from .models import Subtask, Task
+from .models import Subtask, Task, TaskLink
 
 DB_NAME = "data.db"
 
@@ -57,6 +57,19 @@ def init_db(db_path: Path) -> None:
             );
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_task_id INTEGER NOT NULL,
+                to_task_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(from_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(to_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                UNIQUE(from_task_id, to_task_id)
+            );
+            """
+        )
 
 
 def _row_to_task(row: sqlite3.Row) -> Task:
@@ -79,6 +92,15 @@ def _row_to_subtask(row: sqlite3.Row) -> Subtask:
         is_done=bool(row["is_done"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _row_to_task_link(row: sqlite3.Row) -> TaskLink:
+    return TaskLink(
+        id=row["id"],
+        from_task_id=row["from_task_id"],
+        to_task_id=row["to_task_id"],
+        created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
@@ -273,3 +295,85 @@ def due_reminders(db_path: Path, now: Optional[datetime] = None) -> Iterable[Tas
             (moment.isoformat(),),
         ).fetchall()
     return [_row_to_task(row) for row in rows]
+
+
+def _has_path(conn: sqlite3.Connection, start_id: int, target_id: int) -> bool:
+    if start_id == target_id:
+        return True
+    visited: Set[int] = set()
+    stack = [start_id]
+    while stack:
+        node = stack.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        children = conn.execute(
+            "SELECT to_task_id FROM task_links WHERE from_task_id = ?",
+            (node,),
+        ).fetchall()
+        for child in children:
+            child_id = child[0]
+            if child_id == target_id:
+                return True
+            if child_id not in visited:
+                stack.append(child_id)
+    return False
+
+
+def create_task_link(db_path: Path, from_task_id: int, to_task_id: int) -> TaskLink:
+    if from_task_id == to_task_id:
+        raise ValueError("Связь не может указывать задачи саму на себя (образуется цикл).")
+    with get_conn(db_path) as conn:
+        from_exists = conn.execute("SELECT 1 FROM tasks WHERE id = ?", (from_task_id,)).fetchone()
+        to_exists = conn.execute("SELECT 1 FROM tasks WHERE id = ?", (to_task_id,)).fetchone()
+        if not from_exists or not to_exists:
+            raise ValueError("Невозможно создать связь: одна из задач не найдена.")
+        if _has_path(conn, to_task_id, from_task_id):
+            raise ValueError(
+                f"Невозможно создать связь {from_task_id} -> {to_task_id}: возникнет цикл в графе задач."
+            )
+        created_at = _now()
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO task_links (from_task_id, to_task_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (from_task_id, to_task_id, created_at),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Такая связь уже существует.") from exc
+        row = conn.execute("SELECT * FROM task_links WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return _row_to_task_link(row)
+
+
+def list_task_links(db_path: Path, task_id: Optional[int] = None) -> List[TaskLink]:
+    query = "SELECT * FROM task_links"
+    params: Tuple[object, ...] = ()
+    if task_id is not None:
+        query += " WHERE from_task_id = ? OR to_task_id = ?"
+        params = (task_id, task_id)
+    query += " ORDER BY created_at ASC"
+    with get_conn(db_path) as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_row_to_task_link(row) for row in rows]
+
+
+def delete_task_link(
+    db_path: Path,
+    *,
+    from_task_id: Optional[int] = None,
+    to_task_id: Optional[int] = None,
+    link_id: Optional[int] = None,
+) -> bool:
+    with get_conn(db_path) as conn:
+        if link_id is not None:
+            cursor = conn.execute("DELETE FROM task_links WHERE id = ?", (link_id,))
+            return cursor.rowcount > 0
+        if from_task_id is None or to_task_id is None:
+            raise ValueError("Укажите либо link_id, либо from_task_id и to_task_id.")
+        cursor = conn.execute(
+            "DELETE FROM task_links WHERE from_task_id = ? AND to_task_id = ?",
+            (from_task_id, to_task_id),
+        )
+    return cursor.rowcount > 0
