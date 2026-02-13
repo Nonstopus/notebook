@@ -15,9 +15,18 @@
 - Python 3.10+
 - Внешние зависимости не требуются (используется стандартная библиотека и Tkinter).
 
-## Запуск
+## Запуск (GUI)
 ```bash
 python -m app.main
+```
+
+## Запуск (CLI)
+```bash
+python -m app.cli add "Купить хлеб"
+python -m app.cli list
+python -m app.cli list --search "хлеб"
+python -m app.cli done 1
+python -m app.cli delete 1
 ```
 База данных `data.db` создаётся рядом с приложением автоматически.
 
