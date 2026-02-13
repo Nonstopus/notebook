@@ -10,6 +10,7 @@ from typing import Iterable, Iterator, List, Optional, Tuple
 from .models import Subtask, Task
 
 DB_NAME = "data.db"
+_UNSET = object()
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -40,10 +41,14 @@ def init_db(db_path: Path) -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 reminder_datetime TEXT,
+                due_datetime TEXT,
                 note TEXT
             );
             """
         )
+        task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "due_datetime" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN due_datetime TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS subtasks (
@@ -67,6 +72,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         reminder_datetime=datetime.fromisoformat(row["reminder_datetime"]) if row["reminder_datetime"] else None,
+        due_datetime=datetime.fromisoformat(row["due_datetime"]) if row["due_datetime"] else None,
         note=row["note"],
     )
 
@@ -86,16 +92,23 @@ def _now() -> str:
     return datetime.utcnow().isoformat()
 
 
-def create_task(db_path: Path, title: str, reminder_datetime: Optional[datetime] = None, note: Optional[str] = None) -> Task:
+def create_task(
+    db_path: Path,
+    title: str,
+    reminder_datetime: Optional[datetime] = None,
+    due_datetime: Optional[datetime] = None,
+    note: Optional[str] = None,
+) -> Task:
     created_at = _now()
     reminder_value = reminder_datetime.isoformat() if reminder_datetime else None
+    due_value = due_datetime.isoformat() if due_datetime else None
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT INTO tasks (title, is_done, created_at, updated_at, reminder_datetime, note)
-            VALUES (?, 0, ?, ?, ?, ?)
+            INSERT INTO tasks (title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note)
+            VALUES (?, 0, ?, ?, ?, ?, ?)
             """,
-            (title, created_at, created_at, reminder_value, note),
+            (title, created_at, created_at, reminder_value, due_value, note),
         )
         task_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -144,6 +157,7 @@ def update_task(
     title: Optional[str] = None,
     is_done: Optional[bool] = None,
     reminder_datetime: Optional[Optional[datetime]] = None,
+    due_datetime: Optional[Optional[datetime]] | object = _UNSET,
     note: Optional[Optional[str]] = None,
 ) -> Optional[Task]:
     task = get_task(db_path, task_id)
@@ -163,6 +177,9 @@ def update_task(
     if reminder_datetime is not None:
         updates.append("reminder_datetime = ?")
         values.append(reminder_datetime.isoformat() if reminder_datetime else None)
+    if due_datetime is not _UNSET:
+        updates.append("due_datetime = ?")
+        values.append(due_datetime.isoformat() if due_datetime else None)
     if note is not None:
         updates.append("note = ?")
         values.append(note)

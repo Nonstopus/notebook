@@ -64,3 +64,53 @@ def test_search_by_title_and_note(tmp_path):
     by_note = storage.list_tasks(db_path, search="клиенту")
     assert len(by_note) == 1
     assert by_note[0].title == "Подготовка"
+
+
+def test_due_datetime_roundtrip(tmp_path):
+    db_path = temp_db(tmp_path)
+    due_time = datetime.utcnow() + timedelta(days=1)
+
+    created = storage.create_task(db_path, "Дедлайн", due_datetime=due_time)
+    loaded = storage.get_task(db_path, created.id)
+
+    assert loaded is not None
+    assert loaded.due_datetime == due_time
+
+
+def test_update_and_clear_due_datetime(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Обновить дедлайн")
+    due_time = datetime.utcnow() + timedelta(hours=2)
+
+    updated = storage.update_task(db_path, task.id, due_datetime=due_time)
+    assert updated is not None
+    assert updated.due_datetime == due_time
+
+    cleared = storage.update_task(db_path, task.id, due_datetime=None)
+    assert cleared is not None
+    assert cleared.due_datetime is None
+
+
+def test_migrate_adds_due_datetime_column(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    with storage.get_conn(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                is_done INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reminder_datetime TEXT,
+                note TEXT
+            );
+            """
+        )
+
+    storage.init_db(db_path)
+
+    with storage.get_conn(db_path) as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+
+    assert "due_datetime" in columns
