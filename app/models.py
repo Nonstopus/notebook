@@ -13,6 +13,7 @@ class Task:
     created_at: datetime
     updated_at: datetime
     reminder_datetime: Optional[datetime]
+    due_datetime: Optional[datetime]
     note: Optional[str]
 
 
@@ -24,3 +25,12 @@ class Subtask:
     is_done: bool
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass
+class TaskLink:
+    id: int
+    from_task_id: int
+    to_task_id: int
+    link_type: str
+    created_at: datetime
