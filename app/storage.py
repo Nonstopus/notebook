@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Tuple
 
@@ -120,6 +119,9 @@ def list_tasks(
     search: Optional[str] = None,
     has_reminder: Optional[bool] = None,
     is_done: Optional[bool] = None,
+    due_on_date: Optional[date] = None,
+    overdue_only: bool = False,
+    now: Optional[datetime] = None,
 ) -> List[Task]:
     query = "SELECT * FROM tasks"
     clauses: List[str] = []
@@ -136,6 +138,17 @@ def list_tasks(
     if is_done is not None:
         clauses.append("is_done = ?")
         values.append(1 if is_done else 0)
+    if due_on_date is not None:
+        clauses.append("due_datetime >= ? AND due_datetime < ?")
+        start_of_day = datetime.combine(due_on_date, datetime.min.time())
+        start_of_next_day = start_of_day + timedelta(days=1)
+        values.extend([start_of_day.isoformat(), start_of_next_day.isoformat()])
+    if overdue_only:
+        current_moment = (now or datetime.utcnow()).isoformat()
+        clauses.append("due_datetime IS NOT NULL")
+        clauses.append("is_done = 0")
+        clauses.append("due_datetime <= ?")
+        values.append(current_moment)
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY created_at DESC"

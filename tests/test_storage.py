@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from app import storage
@@ -114,3 +114,29 @@ def test_migrate_adds_due_datetime_column(tmp_path):
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
 
     assert "due_datetime" in columns
+
+
+def test_list_tasks_due_on_date_filter(tmp_path):
+    db_path = temp_db(tmp_path)
+
+    storage.create_task(db_path, "Сегодня", due_datetime=datetime(2025, 1, 10, 12, 0, 0))
+    storage.create_task(db_path, "Завтра", due_datetime=datetime(2025, 1, 11, 9, 0, 0))
+    storage.create_task(db_path, "Без срока")
+
+    tasks = storage.list_tasks(db_path, due_on_date=date(2025, 1, 10))
+
+    assert [task.title for task in tasks] == ["Сегодня"]
+
+
+def test_list_tasks_overdue_filter(tmp_path):
+    db_path = temp_db(tmp_path)
+    now = datetime(2025, 1, 10, 12, 0, 0)
+
+    overdue_task = storage.create_task(db_path, "Просрочено", due_datetime=now - timedelta(hours=1))
+    storage.create_task(db_path, "В будущем", due_datetime=now + timedelta(hours=1))
+    done_overdue = storage.create_task(db_path, "Сделано просроченное", due_datetime=now - timedelta(hours=2))
+    storage.update_task(db_path, done_overdue.id, is_done=True)
+
+    tasks = storage.list_tasks(db_path, overdue_only=True, now=now)
+
+    assert [task.title for task in tasks] == [overdue_task.title]
