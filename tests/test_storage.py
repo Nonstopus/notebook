@@ -64,3 +64,28 @@ def test_search_by_title_and_note(tmp_path):
     by_note = storage.list_tasks(db_path, search="клиенту")
     assert len(by_note) == 1
     assert by_note[0].title == "Подготовка"
+
+
+def test_task_links_crud(tmp_path):
+    db_path = temp_db(tmp_path)
+    first = storage.create_task(db_path, "A")
+    second = storage.create_task(db_path, "B")
+
+    assert storage.create_task_link(db_path, first.id, second.id) is True
+    assert storage.create_task_link(db_path, first.id, second.id) is False
+    assert storage.create_task_link(db_path, first.id, first.id) is False
+
+    assert storage.list_task_links(db_path) == [(first.id, second.id)]
+    assert storage.delete_task_link(db_path, first.id, second.id) is True
+    assert storage.list_task_links(db_path) == []
+
+
+def test_task_layout_upsert(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Расположение")
+
+    assert storage.set_task_layout(db_path, task.id, 100.0, 150.0) is True
+    assert storage.get_task_layouts(db_path)[task.id] == (100.0, 150.0)
+
+    assert storage.set_task_layout(db_path, task.id, 120.5, 175.25) is True
+    assert storage.get_task_layouts(db_path)[task.id] == (120.5, 175.25)

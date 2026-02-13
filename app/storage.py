@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .models import Subtask, Task
 
@@ -53,6 +52,28 @@ def init_db(db_path: Path) -> None:
                 is_done INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_links (
+                source_task_id INTEGER NOT NULL,
+                target_task_id INTEGER NOT NULL,
+                PRIMARY KEY (source_task_id, target_task_id),
+                FOREIGN KEY(source_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(target_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                CHECK (source_task_id != target_task_id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_layout (
+                task_id INTEGER PRIMARY KEY,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
                 FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
             """
@@ -273,3 +294,57 @@ def due_reminders(db_path: Path, now: Optional[datetime] = None) -> Iterable[Tas
             (moment.isoformat(),),
         ).fetchall()
     return [_row_to_task(row) for row in rows]
+
+
+def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT source_task_id, target_task_id FROM task_links ORDER BY source_task_id, target_task_id"
+        ).fetchall()
+    return [(row["source_task_id"], row["target_task_id"]) for row in rows]
+
+
+def create_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
+    if source_task_id == target_task_id:
+        return False
+    if not get_task(db_path, source_task_id) or not get_task(db_path, target_task_id):
+        return False
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO task_links (source_task_id, target_task_id)
+            VALUES (?, ?)
+            """,
+            (source_task_id, target_task_id),
+        )
+    return cursor.rowcount > 0
+
+
+def delete_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM task_links WHERE source_task_id = ? AND target_task_id = ?",
+            (source_task_id, target_task_id),
+        )
+    return cursor.rowcount > 0
+
+
+def get_task_layouts(db_path: Path) -> Dict[int, Tuple[float, float]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT task_id, x, y FROM task_layout").fetchall()
+    return {row["task_id"]: (row["x"], row["y"]) for row in rows}
+
+
+def set_task_layout(db_path: Path, task_id: int, x: float, y: float) -> bool:
+    if not get_task(db_path, task_id):
+        return False
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO task_layout (task_id, x, y)
+            VALUES (?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET x = excluded.x, y = excluded.y
+            """,
+            (task_id, x, y),
+        )
+    return True
