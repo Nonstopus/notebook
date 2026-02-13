@@ -4,7 +4,7 @@ import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox
-from typing import Optional
+from typing import Dict, Optional, Set, Tuple
 
 from . import storage
 from .models import Task
@@ -42,6 +42,7 @@ class TaskApp:
         tk.Button(btn_frame, text="Открыть", command=self.open_task).pack(side=tk.LEFT)
         tk.Button(btn_frame, text="Готово/Не готово", command=self.toggle_task).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Удалить", command=self.delete_task).pack(side=tk.LEFT)
+        tk.Button(btn_frame, text="План", command=self.open_plan).pack(side=tk.RIGHT)
 
     def refresh_tasks(self) -> None:
         self.tasks_listbox.delete(0, tk.END)
@@ -93,6 +94,9 @@ class TaskApp:
             messagebox.showinfo("Выберите задачу", "Выберите задачу для просмотра")
             return
         TaskDetail(self, task)
+
+    def open_plan(self) -> None:
+        PlanWindow(self)
 
     def _schedule_reminder_check(self) -> None:
         self.root.after(10_000, self._check_reminders)
@@ -221,6 +225,208 @@ class TaskDetail:
             return
         storage.delete_subtask(self.app.db_path, subtask.id)
         self.refresh_subtasks()
+
+
+class PlanWindow:
+    NODE_WIDTH = 180
+    NODE_HEIGHT = 70
+
+    def __init__(self, app: TaskApp):
+        self.app = app
+        self.window = tk.Toplevel(app.root)
+        self.window.title("План")
+        self._drag_task_id: Optional[int] = None
+        self._drag_offset: Tuple[float, float] = (0.0, 0.0)
+        self._highlighted_nodes: Set[int] = set()
+        self._highlighted_links: Set[Tuple[int, int]] = set()
+        self._build_ui()
+        self.refresh_canvas()
+
+    def _build_ui(self) -> None:
+        controls = tk.Frame(self.window)
+        controls.pack(fill=tk.X, padx=10, pady=8)
+
+        tk.Label(controls, text="Источник:").pack(side=tk.LEFT)
+        self.source_var = tk.StringVar()
+        self.source_menu = tk.OptionMenu(controls, self.source_var, "")
+        self.source_menu.pack(side=tk.LEFT, padx=(5, 10))
+
+        tk.Label(controls, text="Цель:").pack(side=tk.LEFT)
+        self.target_var = tk.StringVar()
+        self.target_menu = tk.OptionMenu(controls, self.target_var, "")
+        self.target_menu.pack(side=tk.LEFT, padx=(5, 10))
+
+        tk.Button(controls, text="Связать", command=self.create_link).pack(side=tk.LEFT)
+
+        tk.Label(controls, text="Связь:").pack(side=tk.LEFT, padx=(15, 0))
+        self.link_var = tk.StringVar()
+        self.link_menu = tk.OptionMenu(controls, self.link_var, "")
+        self.link_menu.pack(side=tk.LEFT, padx=5)
+        tk.Button(controls, text="Удалить связь", command=self.delete_link).pack(side=tk.LEFT)
+
+        self.canvas = tk.Canvas(self.window, bg="white")
+        self.canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.canvas.bind("<ButtonPress-1>", self._start_drag)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._finish_drag)
+
+    def refresh_canvas(self) -> None:
+        self.tasks = storage.list_tasks(self.app.db_path)
+        self.links = storage.list_task_links(self.app.db_path)
+        layout = storage.get_task_layouts(self.app.db_path)
+
+        self.canvas.delete("all")
+        self._nodes: Dict[int, Tuple[float, float]] = {}
+        cols = 4
+        x_step = self.NODE_WIDTH + 40
+        y_step = self.NODE_HEIGHT + 35
+
+        for index, task in enumerate(self.tasks):
+            default_x = 60 + (index % cols) * x_step
+            default_y = 60 + (index // cols) * y_step
+            x, y = layout.get(task.id, (default_x, default_y))
+            self._nodes[task.id] = (x, y)
+
+        for source_id, target_id in self.links:
+            if source_id not in self._nodes or target_id not in self._nodes:
+                continue
+            sx, sy = self._nodes[source_id]
+            tx, ty = self._nodes[target_id]
+            is_highlight = (source_id, target_id) in self._highlighted_links
+            self.canvas.create_line(
+                sx + self.NODE_WIDTH / 2,
+                sy + self.NODE_HEIGHT / 2,
+                tx + self.NODE_WIDTH / 2,
+                ty + self.NODE_HEIGHT / 2,
+                arrow=tk.LAST,
+                width=3 if is_highlight else 1,
+                fill="#0f766e" if is_highlight else "#6b7280",
+            )
+
+        for task in self.tasks:
+            x, y = self._nodes[task.id]
+            self._draw_task_node(task, x, y)
+
+        self._refresh_controls()
+
+    def _draw_task_node(self, task: Task, x: float, y: float) -> None:
+        is_highlight = task.id in self._highlighted_nodes
+        rect = self.canvas.create_rectangle(
+            x,
+            y,
+            x + self.NODE_WIDTH,
+            y + self.NODE_HEIGHT,
+            fill="#d1fae5" if is_highlight else "#f3f4f6",
+            outline="#0f766e" if is_highlight else "#9ca3af",
+            width=2 if is_highlight else 1,
+            tags=(f"task:{task.id}", "task-node"),
+        )
+        due_text = task.reminder_datetime.strftime("%Y-%m-%d %H:%M") if task.reminder_datetime else "—"
+        txt = self.canvas.create_text(
+            x + self.NODE_WIDTH / 2,
+            y + self.NODE_HEIGHT / 2,
+            text=f"{task.title}\nИсполнение: {due_text}",
+            justify=tk.CENTER,
+            tags=(f"task:{task.id}", "task-node"),
+        )
+        self.canvas.tag_raise(txt, rect)
+
+    def _refresh_controls(self) -> None:
+        self._task_label_to_id = {f"#{task.id} {task.title}": task.id for task in self.tasks}
+        labels = list(self._task_label_to_id.keys()) or [""]
+        self._rebuild_option_menu(self.source_menu, self.source_var, labels)
+        self._rebuild_option_menu(self.target_menu, self.target_var, labels)
+
+        link_labels = [f"{s} -> {t}" for s, t in self.links] or [""]
+        self._rebuild_option_menu(self.link_menu, self.link_var, link_labels)
+
+    def _rebuild_option_menu(self, menu: tk.OptionMenu, var: tk.StringVar, options: list[str]) -> None:
+        internal = menu["menu"]
+        internal.delete(0, "end")
+        for opt in options:
+            internal.add_command(label=opt, command=tk._setit(var, opt))
+        var.set(options[0])
+
+    def create_link(self) -> None:
+        source = self._task_label_to_id.get(self.source_var.get())
+        target = self._task_label_to_id.get(self.target_var.get())
+        if source is None or target is None:
+            return
+        if not storage.create_task_link(self.app.db_path, source, target):
+            messagebox.showinfo("Нельзя связать", "Проверьте выбранные задачи (они не должны совпадать)")
+        self._clear_highlight()
+        self.refresh_canvas()
+
+    def delete_link(self) -> None:
+        raw = self.link_var.get()
+        if "->" not in raw:
+            return
+        source_id, target_id = [int(part.strip()) for part in raw.split("->", maxsplit=1)]
+        storage.delete_task_link(self.app.db_path, source_id, target_id)
+        self._clear_highlight()
+        self.refresh_canvas()
+
+    def _start_drag(self, event: tk.Event) -> None:
+        task_id = self._task_id_at(event.x, event.y)
+        if task_id is None:
+            self._clear_highlight()
+            self.refresh_canvas()
+            return
+        self._drag_task_id = task_id
+        x, y = self._nodes[task_id]
+        self._drag_offset = (event.x - x, event.y - y)
+        self._set_highlight_chain(task_id)
+        self.refresh_canvas()
+
+    def _on_drag(self, event: tk.Event) -> None:
+        if self._drag_task_id is None:
+            return
+        x = max(20, event.x - self._drag_offset[0])
+        y = max(20, event.y - self._drag_offset[1])
+        storage.set_task_layout(self.app.db_path, self._drag_task_id, x, y)
+        self.refresh_canvas()
+
+    def _finish_drag(self, _event: tk.Event) -> None:
+        self._drag_task_id = None
+
+    def _task_id_at(self, x: float, y: float) -> Optional[int]:
+        item = self.canvas.find_closest(x, y)
+        if not item:
+            return None
+        for tag in self.canvas.gettags(item[0]):
+            if tag.startswith("task:"):
+                return int(tag.split(":", maxsplit=1)[1])
+        return None
+
+    def _set_highlight_chain(self, task_id: int) -> None:
+        forward: Dict[int, Set[int]] = {}
+        backward: Dict[int, Set[int]] = {}
+        for source, target in self.links:
+            forward.setdefault(source, set()).add(target)
+            backward.setdefault(target, set()).add(source)
+
+        visited_nodes: Set[int] = set()
+        visited_links: Set[Tuple[int, int]] = set()
+
+        stack = [task_id]
+        while stack:
+            node = stack.pop()
+            if node in visited_nodes:
+                continue
+            visited_nodes.add(node)
+            for nxt in forward.get(node, set()):
+                visited_links.add((node, nxt))
+                stack.append(nxt)
+            for prev in backward.get(node, set()):
+                visited_links.add((prev, node))
+                stack.append(prev)
+
+        self._highlighted_nodes = visited_nodes
+        self._highlighted_links = visited_links
+
+    def _clear_highlight(self) -> None:
+        self._highlighted_nodes.clear()
+        self._highlighted_links.clear()
 
 
 def main() -> None:

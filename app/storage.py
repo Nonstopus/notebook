@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .models import Subtask, Task, TaskLink
 
 DB_NAME = "data.db"
+_UNSET = object()
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -40,10 +40,14 @@ def init_db(db_path: Path) -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 reminder_datetime TEXT,
+                due_datetime TEXT,
                 note TEXT
             );
             """
         )
+        task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "due_datetime" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN due_datetime TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS subtasks (
@@ -60,13 +64,22 @@ def init_db(db_path: Path) -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS task_links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                from_task_id INTEGER NOT NULL,
-                to_task_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(from_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                FOREIGN KEY(to_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                UNIQUE(from_task_id, to_task_id)
+                source_task_id INTEGER NOT NULL,
+                target_task_id INTEGER NOT NULL,
+                PRIMARY KEY (source_task_id, target_task_id),
+                FOREIGN KEY(source_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(target_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                CHECK (source_task_id != target_task_id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_layout (
+                task_id INTEGER PRIMARY KEY,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
             """
         )
@@ -80,6 +93,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         reminder_datetime=datetime.fromisoformat(row["reminder_datetime"]) if row["reminder_datetime"] else None,
+        due_datetime=datetime.fromisoformat(row["due_datetime"]) if row["due_datetime"] else None,
         note=row["note"],
     )
 
@@ -100,6 +114,7 @@ def _row_to_task_link(row: sqlite3.Row) -> TaskLink:
         id=row["id"],
         from_task_id=row["from_task_id"],
         to_task_id=row["to_task_id"],
+        link_type=row["link_type"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
@@ -108,16 +123,23 @@ def _now() -> str:
     return datetime.utcnow().isoformat()
 
 
-def create_task(db_path: Path, title: str, reminder_datetime: Optional[datetime] = None, note: Optional[str] = None) -> Task:
+def create_task(
+    db_path: Path,
+    title: str,
+    reminder_datetime: Optional[datetime] = None,
+    due_datetime: Optional[datetime] = None,
+    note: Optional[str] = None,
+) -> Task:
     created_at = _now()
     reminder_value = reminder_datetime.isoformat() if reminder_datetime else None
+    due_value = due_datetime.isoformat() if due_datetime else None
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT INTO tasks (title, is_done, created_at, updated_at, reminder_datetime, note)
-            VALUES (?, 0, ?, ?, ?, ?)
+            INSERT INTO tasks (title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note)
+            VALUES (?, 0, ?, ?, ?, ?, ?)
             """,
-            (title, created_at, created_at, reminder_value, note),
+            (title, created_at, created_at, reminder_value, due_value, note),
         )
         task_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -129,6 +151,9 @@ def list_tasks(
     search: Optional[str] = None,
     has_reminder: Optional[bool] = None,
     is_done: Optional[bool] = None,
+    due_on_date: Optional[date] = None,
+    overdue_only: bool = False,
+    now: Optional[datetime] = None,
 ) -> List[Task]:
     query = "SELECT * FROM tasks"
     clauses: List[str] = []
@@ -145,6 +170,17 @@ def list_tasks(
     if is_done is not None:
         clauses.append("is_done = ?")
         values.append(1 if is_done else 0)
+    if due_on_date is not None:
+        clauses.append("due_datetime >= ? AND due_datetime < ?")
+        start_of_day = datetime.combine(due_on_date, datetime.min.time())
+        start_of_next_day = start_of_day + timedelta(days=1)
+        values.extend([start_of_day.isoformat(), start_of_next_day.isoformat()])
+    if overdue_only:
+        current_moment = (now or datetime.utcnow()).isoformat()
+        clauses.append("due_datetime IS NOT NULL")
+        clauses.append("is_done = 0")
+        clauses.append("due_datetime <= ?")
+        values.append(current_moment)
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY created_at DESC"
@@ -166,6 +202,7 @@ def update_task(
     title: Optional[str] = None,
     is_done: Optional[bool] = None,
     reminder_datetime: Optional[Optional[datetime]] = None,
+    due_datetime: Optional[Optional[datetime]] | object = _UNSET,
     note: Optional[Optional[str]] = None,
 ) -> Optional[Task]:
     task = get_task(db_path, task_id)
@@ -185,6 +222,9 @@ def update_task(
     if reminder_datetime is not None:
         updates.append("reminder_datetime = ?")
         values.append(reminder_datetime.isoformat() if reminder_datetime else None)
+    if due_datetime is not _UNSET:
+        updates.append("due_datetime = ?")
+        values.append(due_datetime.isoformat() if due_datetime else None)
     if note is not None:
         updates.append("note = ?")
         values.append(note)
@@ -281,6 +321,58 @@ def subtask_progress(db_path: Path, task_id: int) -> Tuple[int, int]:
     return completed, total
 
 
+def create_task_link(
+    db_path: Path,
+    from_task_id: int,
+    to_task_id: int,
+    link_type: str = "sequence",
+) -> TaskLink:
+    created_at = _now()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO task_links (from_task_id, to_task_id, link_type, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (from_task_id, to_task_id, link_type, created_at),
+        )
+        link_id = cursor.lastrowid
+        row = conn.execute("SELECT * FROM task_links WHERE id = ?", (link_id,)).fetchone()
+    return _row_to_task_link(row)
+
+
+def list_task_links(db_path: Path, task_id: Optional[int] = None) -> List[TaskLink]:
+    query = "SELECT * FROM task_links"
+    values: Tuple[int, ...] = ()
+    if task_id is not None:
+        query += " WHERE from_task_id = ? OR to_task_id = ?"
+        values = (task_id, task_id)
+    query += " ORDER BY created_at ASC"
+    with get_conn(db_path) as conn:
+        rows = conn.execute(query, values).fetchall()
+    return [_row_to_task_link(row) for row in rows]
+
+
+def delete_task_link(
+    db_path: Path,
+    link_id: Optional[int] = None,
+    *,
+    from_task_id: Optional[int] = None,
+    to_task_id: Optional[int] = None,
+) -> bool:
+    with get_conn(db_path) as conn:
+        if link_id is not None:
+            cursor = conn.execute("DELETE FROM task_links WHERE id = ?", (link_id,))
+        else:
+            if from_task_id is None or to_task_id is None:
+                raise ValueError("Either link_id or both from_task_id and to_task_id must be provided")
+            cursor = conn.execute(
+                "DELETE FROM task_links WHERE from_task_id = ? AND to_task_id = ?",
+                (from_task_id, to_task_id),
+            )
+    return cursor.rowcount > 0
+
+
 def due_reminders(db_path: Path, now: Optional[datetime] = None) -> Iterable[Task]:
     moment = now or datetime.utcnow()
     with get_conn(db_path) as conn:
@@ -297,83 +389,55 @@ def due_reminders(db_path: Path, now: Optional[datetime] = None) -> Iterable[Tas
     return [_row_to_task(row) for row in rows]
 
 
-def _has_path(conn: sqlite3.Connection, start_id: int, target_id: int) -> bool:
-    if start_id == target_id:
-        return True
-    visited: Set[int] = set()
-    stack = [start_id]
-    while stack:
-        node = stack.pop()
-        if node in visited:
-            continue
-        visited.add(node)
-        children = conn.execute(
-            "SELECT to_task_id FROM task_links WHERE from_task_id = ?",
-            (node,),
+def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT source_task_id, target_task_id FROM task_links ORDER BY source_task_id, target_task_id"
         ).fetchall()
-        for child in children:
-            child_id = child[0]
-            if child_id == target_id:
-                return True
-            if child_id not in visited:
-                stack.append(child_id)
-    return False
+    return [(row["source_task_id"], row["target_task_id"]) for row in rows]
 
 
-def create_task_link(db_path: Path, from_task_id: int, to_task_id: int) -> TaskLink:
-    if from_task_id == to_task_id:
-        raise ValueError("Связь не может указывать задачи саму на себя (образуется цикл).")
+def create_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
+    if source_task_id == target_task_id:
+        return False
+    if not get_task(db_path, source_task_id) or not get_task(db_path, target_task_id):
+        return False
     with get_conn(db_path) as conn:
-        from_exists = conn.execute("SELECT 1 FROM tasks WHERE id = ?", (from_task_id,)).fetchone()
-        to_exists = conn.execute("SELECT 1 FROM tasks WHERE id = ?", (to_task_id,)).fetchone()
-        if not from_exists or not to_exists:
-            raise ValueError("Невозможно создать связь: одна из задач не найдена.")
-        if _has_path(conn, to_task_id, from_task_id):
-            raise ValueError(
-                f"Невозможно создать связь {from_task_id} -> {to_task_id}: возникнет цикл в графе задач."
-            )
-        created_at = _now()
-        try:
-            cursor = conn.execute(
-                """
-                INSERT INTO task_links (from_task_id, to_task_id, created_at)
-                VALUES (?, ?, ?)
-                """,
-                (from_task_id, to_task_id, created_at),
-            )
-        except sqlite3.IntegrityError as exc:
-            raise ValueError("Такая связь уже существует.") from exc
-        row = conn.execute("SELECT * FROM task_links WHERE id = ?", (cursor.lastrowid,)).fetchone()
-    return _row_to_task_link(row)
-
-
-def list_task_links(db_path: Path, task_id: Optional[int] = None) -> List[TaskLink]:
-    query = "SELECT * FROM task_links"
-    params: Tuple[object, ...] = ()
-    if task_id is not None:
-        query += " WHERE from_task_id = ? OR to_task_id = ?"
-        params = (task_id, task_id)
-    query += " ORDER BY created_at ASC"
-    with get_conn(db_path) as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [_row_to_task_link(row) for row in rows]
-
-
-def delete_task_link(
-    db_path: Path,
-    *,
-    from_task_id: Optional[int] = None,
-    to_task_id: Optional[int] = None,
-    link_id: Optional[int] = None,
-) -> bool:
-    with get_conn(db_path) as conn:
-        if link_id is not None:
-            cursor = conn.execute("DELETE FROM task_links WHERE id = ?", (link_id,))
-            return cursor.rowcount > 0
-        if from_task_id is None or to_task_id is None:
-            raise ValueError("Укажите либо link_id, либо from_task_id и to_task_id.")
         cursor = conn.execute(
-            "DELETE FROM task_links WHERE from_task_id = ? AND to_task_id = ?",
-            (from_task_id, to_task_id),
+            """
+            INSERT OR IGNORE INTO task_links (source_task_id, target_task_id)
+            VALUES (?, ?)
+            """,
+            (source_task_id, target_task_id),
         )
     return cursor.rowcount > 0
+
+
+def delete_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM task_links WHERE source_task_id = ? AND target_task_id = ?",
+            (source_task_id, target_task_id),
+        )
+    return cursor.rowcount > 0
+
+
+def get_task_layouts(db_path: Path) -> Dict[int, Tuple[float, float]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT task_id, x, y FROM task_layout").fetchall()
+    return {row["task_id"]: (row["x"], row["y"]) for row in rows}
+
+
+def set_task_layout(db_path: Path, task_id: int, x: float, y: float) -> bool:
+    if not get_task(db_path, task_id):
+        return False
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO task_layout (task_id, x, y)
+            VALUES (?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET x = excluded.x, y = excluded.y
+            """,
+            (task_id, x, y),
+        )
+    return True
