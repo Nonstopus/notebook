@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from app import storage
@@ -66,58 +66,77 @@ def test_search_by_title_and_note(tmp_path):
     assert by_note[0].title == "Подготовка"
 
 
-
-def test_create_and_list_task_links(tmp_path):
+def test_due_datetime_roundtrip(tmp_path):
     db_path = temp_db(tmp_path)
-    t1 = storage.create_task(db_path, "A")
-    t2 = storage.create_task(db_path, "B")
+    due_time = datetime.utcnow() + timedelta(days=1)
 
-    link = storage.create_task_link(db_path, t1.id, t2.id)
+    created = storage.create_task(db_path, "Дедлайн", due_datetime=due_time)
+    loaded = storage.get_task(db_path, created.id)
 
-    links = storage.list_task_links(db_path)
-    assert len(links) == 1
-    assert links[0].id == link.id
-    assert links[0].from_task_id == t1.id
-    assert links[0].to_task_id == t2.id
-    assert links[0].link_type == "sequence"
+    assert loaded is not None
+    assert loaded.due_datetime == due_time
 
 
-
-def test_task_link_constraints_and_delete(tmp_path):
-    import sqlite3
-
+def test_update_and_clear_due_datetime(tmp_path):
     db_path = temp_db(tmp_path)
-    t1 = storage.create_task(db_path, "A")
-    t2 = storage.create_task(db_path, "B")
+    task = storage.create_task(db_path, "Обновить дедлайн")
+    due_time = datetime.utcnow() + timedelta(hours=2)
 
-    storage.create_task_link(db_path, t1.id, t2.id, link_type="dependency")
+    updated = storage.update_task(db_path, task.id, due_datetime=due_time)
+    assert updated is not None
+    assert updated.due_datetime == due_time
 
-    try:
-        storage.create_task_link(db_path, t1.id, t2.id)
-        assert False, "Expected duplicate link to fail"
-    except sqlite3.IntegrityError:
-        pass
-
-    try:
-        storage.create_task_link(db_path, t1.id, t1.id)
-        assert False, "Expected self link to fail"
-    except sqlite3.IntegrityError:
-        pass
-
-    assert storage.delete_task_link(db_path, from_task_id=t1.id, to_task_id=t2.id)
-    assert storage.list_task_links(db_path) == []
+    cleared = storage.update_task(db_path, task.id, due_datetime=None)
+    assert cleared is not None
+    assert cleared.due_datetime is None
 
 
+def test_migrate_adds_due_datetime_column(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    with storage.get_conn(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                is_done INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reminder_datetime TEXT,
+                note TEXT
+            );
+            """
+        )
 
-def test_task_link_deleted_with_task(tmp_path):
+    storage.init_db(db_path)
+
+    with storage.get_conn(db_path) as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+
+    assert "due_datetime" in columns
+
+
+def test_list_tasks_due_on_date_filter(tmp_path):
     db_path = temp_db(tmp_path)
-    t1 = storage.create_task(db_path, "A")
-    t2 = storage.create_task(db_path, "B")
-    link = storage.create_task_link(db_path, t1.id, t2.id)
 
-    assert storage.delete_task_link(db_path, link.id)
+    storage.create_task(db_path, "Сегодня", due_datetime=datetime(2025, 1, 10, 12, 0, 0))
+    storage.create_task(db_path, "Завтра", due_datetime=datetime(2025, 1, 11, 9, 0, 0))
+    storage.create_task(db_path, "Без срока")
 
-    link2 = storage.create_task_link(db_path, t1.id, t2.id)
-    storage.delete_task(db_path, t1.id)
+    tasks = storage.list_tasks(db_path, due_on_date=date(2025, 1, 10))
 
-    assert not storage.delete_task_link(db_path, link2.id)
+    assert [task.title for task in tasks] == ["Сегодня"]
+
+
+def test_list_tasks_overdue_filter(tmp_path):
+    db_path = temp_db(tmp_path)
+    now = datetime(2025, 1, 10, 12, 0, 0)
+
+    overdue_task = storage.create_task(db_path, "Просрочено", due_datetime=now - timedelta(hours=1))
+    storage.create_task(db_path, "В будущем", due_datetime=now + timedelta(hours=1))
+    done_overdue = storage.create_task(db_path, "Сделано просроченное", due_datetime=now - timedelta(hours=2))
+    storage.update_task(db_path, done_overdue.id, is_done=True)
+
+    tasks = storage.list_tasks(db_path, overdue_only=True, now=now)
+
+    assert [task.title for task in tasks] == [overdue_task.title]

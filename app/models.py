@@ -13,6 +13,7 @@ class Task:
     created_at: datetime
     updated_at: datetime
     reminder_datetime: Optional[datetime]
+    due_datetime: Optional[datetime]
     note: Optional[str]
 
 
