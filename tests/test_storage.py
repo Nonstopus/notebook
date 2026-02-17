@@ -140,3 +140,16 @@ def test_list_tasks_overdue_filter(tmp_path):
     tasks = storage.list_tasks(db_path, overdue_only=True, now=now)
 
     assert [task.title for task in tasks] == [overdue_task.title]
+
+
+def test_convert_task_to_subtask(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent = storage.create_task(db_path, "Родитель")
+    child = storage.create_task(db_path, "Дочерняя")
+
+    converted = storage.convert_task_to_subtask(db_path, child.id, parent.id)
+
+    assert converted is not None
+    subtasks = storage.list_subtasks(db_path, parent.id)
+    assert [subtask.title for subtask in subtasks] == ["Дочерняя"]
+    assert all(task.id != child.id for task in storage.list_tasks(db_path))

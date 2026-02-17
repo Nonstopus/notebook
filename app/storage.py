@@ -249,6 +249,31 @@ def delete_task(db_path: Path, task_id: int) -> bool:
     return cursor.rowcount > 0
 
 
+def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: int) -> Optional[Subtask]:
+    if child_task_id == parent_task_id:
+        raise ValueError("Нельзя сделать задачу подзадачей самой себя")
+
+    child_task = get_task(db_path, child_task_id)
+    parent_task = get_task(db_path, parent_task_id)
+    if not child_task or not parent_task:
+        return None
+
+    created_subtask = create_subtask(db_path, parent_task_id, child_task.title)
+    if not created_subtask:
+        return None
+
+    if child_task.is_done:
+        updated_subtask = update_subtask(db_path, created_subtask.id, is_done=True)
+        if updated_subtask:
+            created_subtask = updated_subtask
+
+    deleted = delete_task(db_path, child_task_id)
+    if not deleted:
+        return None
+
+    return created_subtask
+
+
 def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]:
     if not get_task(db_path, task_id):
         return None
