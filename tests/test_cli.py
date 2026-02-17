@@ -56,3 +56,9 @@ def test_cli_convert_to_subtask_success(tmp_path):
 
     listed = run_cli(tmp_path, "list")
     assert "#2" not in listed.stdout
+
+
+def test_cli_convert_to_subtask_same_task(tmp_path):
+    run_cli(tmp_path, "add", "Одиночная")
+    result = run_cli(tmp_path, "convert-to-subtask", "1", "1")
+    assert "Нельзя сделать задачу подзадачей самой себя" in result.stdout
