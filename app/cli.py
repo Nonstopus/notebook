@@ -116,37 +116,29 @@ def main() -> None:
 
     if args.command == "link":
         if args.link_command == "add":
-            try:
-                link = storage.create_task_link(args.db, args.from_id, args.to_id)
-            except ValueError as exc:
-                print(str(exc))
+            created = storage.create_task_link(args.db, args.from_id, args.to_id)
+            if not created:
+                print("Не удалось добавить связь")
                 return
-            print(f"Связь добавлена: #{link.id} {link.from_task_id} -> {link.to_task_id}")
+            print(f"Связь добавлена: {args.from_id} -> {args.to_id}")
             return
 
         if args.link_command == "list":
-            links = storage.list_task_links(args.db, task_id=args.task_id)
+            links = storage.list_task_links(args.db)
+            if args.task_id is not None:
+                links = [pair for pair in links if args.task_id in pair]
             if not links:
                 print("Связи не найдены")
                 return
-            for link in links:
-                print(f"#{link.id}: {link.from_task_id} -> {link.to_task_id}")
+            for source_task_id, target_task_id in links:
+                print(f"{source_task_id} -> {target_task_id}")
             return
 
         if args.link_command == "delete":
-            if args.link_id is None and (args.from_id is None or args.to_id is None):
-                print("Укажите --link-id или пару from_id to_id")
+            if args.from_id is None or args.to_id is None:
+                print("Укажите пару from_id to_id")
                 return
-            try:
-                deleted = storage.delete_task_link(
-                    args.db,
-                    from_task_id=args.from_id,
-                    to_task_id=args.to_id,
-                    link_id=args.link_id,
-                )
-            except ValueError as exc:
-                print(str(exc))
-                return
+            deleted = storage.delete_task_link(args.db, args.from_id, args.to_id)
             if not deleted:
                 print("Связь не найдена")
                 return

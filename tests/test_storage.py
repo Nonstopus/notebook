@@ -153,3 +153,27 @@ def test_convert_task_to_subtask(tmp_path):
     subtasks = storage.list_subtasks(db_path, parent.id)
     assert [subtask.title for subtask in subtasks] == ["Дочерняя"]
     assert all(task.id != child.id for task in storage.list_tasks(db_path))
+
+
+def test_convert_task_to_subtask_requires_different_tasks(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Одна задача")
+
+    try:
+        storage.convert_task_to_subtask(db_path, task.id, task.id)
+    except ValueError as exc:
+        assert "самой себя" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for self conversion")
+
+
+def test_convert_task_to_subtask_with_deleted_parent(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent = storage.create_task(db_path, "Родитель")
+    child = storage.create_task(db_path, "Дочерняя")
+    storage.delete_task(db_path, parent.id)
+
+    converted = storage.convert_task_to_subtask(db_path, child.id, parent.id)
+
+    assert converted is None
+    assert storage.get_task(db_path, child.id) is not None

@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from typing import Dict, Optional, Set, Tuple
 
 from . import storage
@@ -50,7 +50,11 @@ class TaskApp:
         for task in tasks:
             progress = storage.subtask_progress(self.db_path, task.id)
             reminder_flag = " ⏰" if task.reminder_datetime else ""
-            label = f"[{'✓' if task.is_done else ' '}] {task.title}{reminder_flag} ({progress[0]}/{progress[1]})"
+            prefix = "📁 " if progress[1] > 0 else ""
+            label = (
+                f"[{'✓' if task.is_done else ' '}] {prefix}{task.title}{reminder_flag} "
+                f"({progress[0]}/{progress[1]}, subtasks: {progress[1]})"
+            )
             self.tasks_listbox.insert(tk.END, label)
         self._tasks_cache = tasks
 
@@ -158,6 +162,29 @@ class TaskDetail:
         self.subtask_entry.bind("<Return>", lambda _: self.add_subtask())
         tk.Button(add_frame, text="Добавить подзадачу", command=self.add_subtask).pack(side=tk.LEFT, padx=5)
 
+        convert_frame = tk.LabelFrame(self.window, text="Сделать эту задачу подзадачей")
+        convert_frame.pack(fill=tk.X, padx=10, pady=(5, 10))
+        self.parent_task_var = tk.StringVar()
+        self.parent_task_combobox = ttk.Combobox(convert_frame, textvariable=self.parent_task_var, state="readonly")
+        self.parent_task_combobox.pack(fill=tk.X, padx=8, pady=(8, 6))
+        tk.Button(convert_frame, text="Преобразовать в подзадачу", command=self.convert_to_subtask).pack(
+            anchor=tk.E, padx=8, pady=(0, 8)
+        )
+        self._refresh_parent_options()
+
+    def _refresh_parent_options(self) -> None:
+        tasks = storage.list_tasks(self.app.db_path)
+        options = []
+        self._parent_options: Dict[str, int] = {}
+        for task in tasks:
+            if task.id == self.task.id:
+                continue
+            option = f"#{task.id} {task.title}"
+            options.append(option)
+            self._parent_options[option] = task.id
+        self.parent_task_combobox["values"] = options
+        self.parent_task_var.set("")
+
     def refresh_subtasks(self) -> None:
         self.task = storage.get_task(self.app.db_path, self.task.id) or self.task
         self.subtask_list.delete(0, tk.END)
@@ -165,6 +192,7 @@ class TaskDetail:
         self._subtasks_cache = subtasks
         for st in subtasks:
             self.subtask_list.insert(tk.END, f"[{'✓' if st.is_done else ' '}] {st.title}")
+        self._refresh_parent_options()
         self.app.refresh_tasks()
 
     def _on_status_change(self) -> None:
@@ -225,6 +253,31 @@ class TaskDetail:
             return
         storage.delete_subtask(self.app.db_path, subtask.id)
         self.refresh_subtasks()
+
+    def convert_to_subtask(self) -> None:
+        selected_target = self.parent_task_var.get().strip()
+        if not selected_target:
+            messagebox.showinfo("Выберите цель", "Выберите задачу, в которую нужно перенести текущую задачу")
+            return
+
+        parent_task_id = self._parent_options.get(selected_target)
+        if parent_task_id is None:
+            messagebox.showinfo("Неверный выбор", "Выбранная задача недоступна. Обновите список и попробуйте снова")
+            self._refresh_parent_options()
+            return
+
+        if parent_task_id == self.task.id:
+            messagebox.showinfo("Неверный выбор", "Нельзя сделать задачу подзадачей самой себя")
+            return
+
+        converted = storage.convert_task_to_subtask(self.app.db_path, self.task.id, parent_task_id)
+        if not converted:
+            messagebox.showinfo("Не удалось преобразовать", "Целевая задача не найдена или уже удалена")
+            self._refresh_parent_options()
+            return
+
+        self.window.destroy()
+        self.app.refresh_tasks()
 
 
 class PlanWindow:
