@@ -29,6 +29,13 @@ def _build_parser() -> argparse.ArgumentParser:
     delete_parser = subparsers.add_parser("delete", help="Удалить задачу")
     delete_parser.add_argument("task_id", type=int, help="ID задачи")
 
+    convert_parser = subparsers.add_parser(
+        "convert-to-subtask",
+        help="Сделать задачу подзадачей другой задачи",
+    )
+    convert_parser.add_argument("task_id", type=int, help="ID преобразуемой задачи")
+    convert_parser.add_argument("parent_task_id", type=int, help="ID родительской задачи")
+
     link_parser = subparsers.add_parser("link", help="Управление связями между задачами")
     link_subparsers = link_parser.add_subparsers(dest="link_command", required=True)
 
@@ -91,6 +98,20 @@ def main() -> None:
             print(f"Задача #{args.task_id} не найдена")
             return
         print(f"Удалено: #{args.task_id}")
+        return
+
+    if args.command == "convert-to-subtask":
+        try:
+            subtask = storage.convert_task_to_subtask(args.db, args.task_id, args.parent_task_id)
+        except ValueError:
+            print("Нельзя сделать задачу подзадачей самой себя")
+            return
+        if not subtask:
+            print("Задача не найдена")
+            return
+        print(
+            f"Задача #{args.task_id} преобразована в подзадачу #{subtask.id} для задачи #{args.parent_task_id}"
+        )
         return
 
     if args.command == "link":

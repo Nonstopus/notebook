@@ -45,3 +45,14 @@ def test_cli_links(tmp_path):
 
     deleted = run_cli(tmp_path, "link", "delete", "1", "2")
     assert "Связь удалена" in deleted.stdout
+
+
+def test_cli_convert_to_subtask_success(tmp_path):
+    run_cli(tmp_path, "add", "Родитель")
+    run_cli(tmp_path, "add", "Дочерняя")
+
+    converted = run_cli(tmp_path, "convert-to-subtask", "2", "1")
+    assert "преобразована в подзадачу" in converted.stdout
+
+    listed = run_cli(tmp_path, "list")
+    assert "#2" not in listed.stdout
