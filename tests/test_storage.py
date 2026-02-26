@@ -699,6 +699,46 @@ def test_note_html_sanitization(tmp_path):
     assert "<h2>" in task.note
 
 
+def test_note_roundtrip_strips_qt_css_and_keeps_user_formatting(tmp_path):
+    db_path = temp_db(tmp_path)
+    raw = (
+        "<!DOCTYPE HTML><html><head><meta charset='utf-8'/>"
+        "<style type='text/css'>p, li { white-space: pre-wrap; }</style></head>"
+        "<body><h2>Список</h2><ul><li>Первый</li><li><strong>Второй</strong></li></ul>"
+        "<blockquote>Цитата</blockquote></body></html>"
+    )
+
+    created = storage.create_task(db_path, "Заметка", note=raw)
+    reloaded = storage.get_task(db_path, created.id)
+
+    assert reloaded is not None
+    assert reloaded.note is not None
+    assert "white-space" not in reloaded.note
+    assert "<style" not in reloaded.note
+    assert "<ul>" in reloaded.note
+    assert "<blockquote>" in reloaded.note
+
+
+def test_repair_sanitized_notes_updates_corrupted_notes(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Task", note="<p>ok</p>")
+    subtask = storage.create_subtask(db_path, task.id, "Subtask")
+    assert subtask is not None
+
+    broken = "<style>p, li { white-space: pre-wrap; }</style><p>Текст</p>"
+    with storage.get_conn(db_path) as conn:
+        conn.execute("UPDATE tasks SET note = ? WHERE id = ?", (broken, task.id))
+        conn.execute("UPDATE subtasks SET note = ? WHERE id = ?", (broken, subtask.id))
+
+    repaired = storage.repair_sanitized_notes(db_path)
+    repaired_task = storage.get_task(db_path, task.id)
+    repaired_subtask = storage.get_subtask(db_path, subtask.id)
+
+    assert repaired == {"tasks": 1, "subtasks": 1}
+    assert repaired_task is not None and repaired_task.note == "<p>Текст</p>"
+    assert repaired_subtask is not None and repaired_subtask.note == "<p>Текст</p>"
+
+
 def test_attachment_crud_for_task_and_subtask(tmp_path):
     db_path = temp_db(tmp_path)
     task = storage.create_task(db_path, "Task")

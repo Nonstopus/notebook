@@ -21,6 +21,7 @@ ALLOWED_NOTE_TAGS = {
     "p", "br", "strong", "b", "em", "i", "u", "ul", "ol", "li", "h1", "h2", "h3", "blockquote"
 }
 ALLOWED_NOTE_ATTRS = {"blockquote": {"cite"}}
+STRIP_NOTE_CONTENT_TAGS = {"style", "script", "head"}
 
 
 class ConvertToSubtaskError(ValueError):
@@ -51,9 +52,15 @@ class _NoteHTMLSanitizer(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: List[str] = []
+        self._strip_content_depth = 0
 
     def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
         normalized = tag.lower()
+        if normalized in STRIP_NOTE_CONTENT_TAGS:
+            self._strip_content_depth += 1
+            return
+        if self._strip_content_depth:
+            return
         if normalized not in ALLOWED_NOTE_TAGS:
             return
         allowed_attrs = ALLOWED_NOTE_ATTRS.get(normalized, set())
@@ -66,16 +73,27 @@ class _NoteHTMLSanitizer(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         normalized = tag.lower()
+        if normalized in STRIP_NOTE_CONTENT_TAGS:
+            self._strip_content_depth = max(0, self._strip_content_depth - 1)
+            return
+        if self._strip_content_depth:
+            return
         if normalized in ALLOWED_NOTE_TAGS:
             self.parts.append(f"</{normalized}>")
 
     def handle_data(self, data: str) -> None:
+        if self._strip_content_depth:
+            return
         self.parts.append(escape(data))
 
     def handle_entityref(self, name: str) -> None:
+        if self._strip_content_depth:
+            return
         self.parts.append(f"&{name};")
 
     def handle_charref(self, name: str) -> None:
+        if self._strip_content_depth:
+            return
         self.parts.append(f"&#{name};")
 
 
@@ -91,6 +109,20 @@ def sanitize_note_html(note: Optional[str]) -> Optional[str]:
     sanitized = "".join(sanitizer.parts)
     sanitized = re.sub(r"\s+", " ", sanitized).strip()
     return sanitized
+
+
+def repair_sanitized_notes(db_path: Path) -> Dict[str, int]:
+    repaired = {"tasks": 0, "subtasks": 0}
+    with get_conn(db_path) as conn:
+        for table in ("tasks", "subtasks"):
+            rows = conn.execute(f"SELECT id, note FROM {table} WHERE note IS NOT NULL").fetchall()
+            for row in rows:
+                sanitized = sanitize_note_html(row["note"])
+                if sanitized == row["note"]:
+                    continue
+                conn.execute(f"UPDATE {table} SET note = ? WHERE id = ?", (sanitized, row["id"]))
+                repaired[table] += 1
+    return repaired
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:

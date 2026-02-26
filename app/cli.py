@@ -37,6 +37,11 @@ def _build_parser() -> argparse.ArgumentParser:
     delete_parser = subparsers.add_parser("delete", help="Удалить задачу")
     delete_parser.add_argument("task_id", type=int, help="ID задачи")
 
+    subparsers.add_parser(
+        "repair-notes",
+        help="Очистить заметки от служебных CSS/HTML артефактов Qt",
+    )
+
     convert_parser = subparsers.add_parser(
         "convert-to-subtask",
         help="Сделать задачу подзадачей другой задачи",
@@ -123,6 +128,14 @@ def main() -> None:
             print(f"Задача #{args.task_id} не найдена")
             return
         print(f"Удалено: #{args.task_id}")
+        return
+
+    if args.command == "repair-notes":
+        repaired = task_service.repair_sanitized_notes(args.db)
+        print(
+            "Исправлено заметок: "
+            f"tasks={repaired['tasks']}, subtasks={repaired['subtasks']}"
+        )
         return
 
     if args.command == "convert-to-subtask":
