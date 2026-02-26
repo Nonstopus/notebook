@@ -6,9 +6,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -61,16 +64,46 @@ class BoardsPage(QWidget):
         self.board_selector = QComboBox(self)
         self.columns_layout = QHBoxLayout()
         self.column_widgets: dict[int, BoardColumnList] = {}
+        self.columns_editor = QListWidget(self)
 
         self._build_ui()
         self.refresh_boards()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.addWidget(QLabel("Доска", self))
-        root.addWidget(self.board_selector)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Доска", self))
+        top.addWidget(self.board_selector, 1)
+        create_board_btn = QPushButton("+ Доска", self)
+        delete_board_btn = QPushButton("Удалить доску", self)
+        top.addWidget(create_board_btn)
+        top.addWidget(delete_board_btn)
+        root.addLayout(top)
+
+        editor = QHBoxLayout()
+        editor.addWidget(QLabel("Колонки", self))
+        self.columns_editor.setMaximumHeight(120)
+        editor.addWidget(self.columns_editor, 1)
+        add_col_btn = QPushButton("+", self)
+        rename_col_btn = QPushButton("Переим.", self)
+        delete_col_btn = QPushButton("Удалить", self)
+        up_col_btn = QPushButton("↑", self)
+        down_col_btn = QPushButton("↓", self)
+        for btn in [add_col_btn, rename_col_btn, delete_col_btn, up_col_btn, down_col_btn]:
+            editor.addWidget(btn)
+        root.addLayout(editor)
+
         root.addLayout(self.columns_layout)
+
         self.board_selector.currentIndexChanged.connect(self._render_board)
+        create_board_btn.clicked.connect(self._create_board)
+        delete_board_btn.clicked.connect(self._delete_board)
+        add_col_btn.clicked.connect(self._create_column)
+        rename_col_btn.clicked.connect(self._rename_column)
+        delete_col_btn.clicked.connect(self._delete_column)
+        up_col_btn.clicked.connect(lambda: self._move_column(-1))
+        down_col_btn.clicked.connect(lambda: self._move_column(1))
 
     def _column(self, title: str, list_widget: QListWidget) -> QVBoxLayout:
         column = QVBoxLayout()
@@ -82,6 +115,13 @@ class BoardsPage(QWidget):
 
     def _active_board_id(self) -> int | None:
         value = self.board_selector.currentData()
+        return int(value) if value is not None else None
+
+    def _current_editor_column_id(self) -> int | None:
+        item = self.columns_editor.currentItem()
+        if item is None:
+            return None
+        value = item.data(Qt.ItemDataRole.UserRole)
         return int(value) if value is not None else None
 
     def _clear_columns(self) -> None:
@@ -99,6 +139,7 @@ class BoardsPage(QWidget):
     def _render_board(self) -> None:
         board_id = self._active_board_id()
         self._clear_columns()
+        self.columns_editor.clear()
         if board_id is None:
             return
 
@@ -107,6 +148,10 @@ class BoardsPage(QWidget):
         tasks_by_id = {task.id: task for task in task_service.list_tasks(self.db_path)}
 
         for column in columns:
+            editor_item = QListWidgetItem(f"{column.position + 1}. {column.name}")
+            editor_item.setData(Qt.ItemDataRole.UserRole, column.id)
+            self.columns_editor.addItem(editor_item)
+
             list_widget = BoardColumnList(column.id, self._persist_column_order, self)
             self.column_widgets[column.id] = list_widget
             self.columns_layout.addLayout(self._column(column.name, list_widget))
@@ -120,7 +165,6 @@ class BoardsPage(QWidget):
             list_item.setFlags(list_item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
             self.column_widgets[item.column_id].addItem(list_item)
 
-        # Автоматически добавляем неразмещённые задачи в первую колонку доски.
         for task in tasks_by_id.values():
             existing = task_service.ensure_board_item(self.db_path, board_id, task.id)
             if existing and existing.column_id in self.column_widgets:
@@ -136,6 +180,92 @@ class BoardsPage(QWidget):
 
     def _persist_column_order(self, target_column_id: int, board_item_id: int, target_position: int) -> None:
         task_service.move_board_item_by_id(self.db_path, board_item_id, target_column_id, target_position)
+
+    def _create_board(self) -> None:
+        name, ok = QInputDialog.getText(self, "Новая доска", "Название доски:")
+        if ok and name.strip():
+            task_service.create_board(self.db_path, name.strip(), ["К выполнению", "В работе", "Готово"])
+            self.refresh_boards()
+
+    def _delete_board(self) -> None:
+        board_id = self._active_board_id()
+        if board_id is None:
+            return
+        confirm = QMessageBox.question(self, "Удаление доски", "Удалить текущую доску?")
+        if confirm == QMessageBox.StandardButton.Yes:
+            task_service.delete_board(self.db_path, board_id)
+            self.refresh_boards()
+
+    def _create_column(self) -> None:
+        board_id = self._active_board_id()
+        if board_id is None:
+            return
+        name, ok = QInputDialog.getText(self, "Новая колонка", "Название колонки:")
+        if ok and name.strip():
+            task_service.create_board_column(self.db_path, board_id, name.strip())
+            self._render_board()
+
+    def _rename_column(self) -> None:
+        column_id = self._current_editor_column_id()
+        if column_id is None:
+            return
+        name, ok = QInputDialog.getText(self, "Переименовать колонку", "Новое название:")
+        if ok and name.strip():
+            task_service.update_board_column(self.db_path, column_id, name=name.strip())
+            self._render_board()
+
+    def _delete_column(self) -> None:
+        board_id = self._active_board_id()
+        column_id = self._current_editor_column_id()
+        if board_id is None or column_id is None:
+            return
+
+        columns = task_service.list_board_columns(self.db_path, board_id)
+        targets = [col for col in columns if col.id != column_id]
+        if not targets:
+            QMessageBox.warning(self, "Удаление колонки", "На доске должна остаться хотя бы одна колонка.")
+            return
+
+        names = [col.name for col in targets]
+        target_name, ok = QInputDialog.getItem(
+            self,
+            "Удаление колонки",
+            "Перенести карточки в колонку:",
+            names,
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        target = next((col for col in targets if col.name == target_name), None)
+        if target is None:
+            return
+        task_service.delete_board_column(self.db_path, column_id, target.id)
+        self._render_board()
+
+    def _move_column(self, delta: int) -> None:
+        board_id = self._active_board_id()
+        column_id = self._current_editor_column_id()
+        if board_id is None or column_id is None:
+            return
+
+        columns = task_service.list_board_columns(self.db_path, board_id)
+        ids = [col.id for col in columns]
+        current_index = ids.index(column_id)
+        new_index = current_index + delta
+        if new_index < 0 or new_index >= len(ids):
+            return
+        ids[current_index], ids[new_index] = ids[new_index], ids[current_index]
+        task_service.reorder_board_columns(self.db_path, board_id, ids)
+        self._render_board()
+        self._select_editor_column(column_id)
+
+    def _select_editor_column(self, column_id: int) -> None:
+        for index in range(self.columns_editor.count()):
+            if self.columns_editor.item(index).data(Qt.ItemDataRole.UserRole) == column_id:
+                self.columns_editor.setCurrentRow(index)
+                break
 
     def refresh_boards(self) -> None:
         boards = task_service.list_boards(self.db_path)
