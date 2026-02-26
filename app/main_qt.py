@@ -15,6 +15,7 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
+        QComboBox,
         QDateTimeEdit,
         QDialog,
         QFormLayout,
@@ -257,6 +258,31 @@ class TaskQtWindow(QMainWindow):
         clear_search_btn = QPushButton("Сброс", self)
         clear_search_btn.clicked.connect(self.clear_search)
         search_row.addWidget(clear_search_btn)
+
+        search_row.addWidget(QLabel("Статус", self))
+        self.status_filter = QComboBox(self)
+        self.status_filter.addItems(["Все", "Активные", "Выполненные"])
+        self.status_filter.currentIndexChanged.connect(self.refresh_tasks)
+        search_row.addWidget(self.status_filter)
+
+        search_row.addWidget(QLabel("Подзадачи", self))
+        self.subtasks_filter = QComboBox(self)
+        self.subtasks_filter.addItems(["Все", "Есть подзадачи", "Без подзадач"])
+        self.subtasks_filter.currentIndexChanged.connect(self.refresh_tasks)
+        search_row.addWidget(self.subtasks_filter)
+
+        search_row.addWidget(QLabel("Сортировка", self))
+        self.sort_mode = QComboBox(self)
+        self.sort_mode.addItems(
+            [
+                "Сначала новые",
+                "Сначала старые",
+                "Статус (активные → выполненные)",
+                "Подзадачи (по убыванию)",
+            ]
+        )
+        self.sort_mode.currentIndexChanged.connect(self.refresh_tasks)
+        search_row.addWidget(self.sort_mode)
         root.addLayout(search_row)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -337,20 +363,59 @@ class TaskQtWindow(QMainWindow):
 
     def clear_search(self) -> None:
         self.search_input.setText("")
+        self.status_filter.setCurrentIndex(0)
+        self.subtasks_filter.setCurrentIndex(0)
+        self.sort_mode.setCurrentIndex(0)
         self.refresh_tasks()
 
     def refresh_tasks(self) -> None:
         selected = self._selected_task_id()
         query = self.search_input.text().strip() if hasattr(self, "search_input") else ""
-        self._tasks_cache = task_service.list_tasks(self.db_path, search=query or None)
+        status_value = self.status_filter.currentText() if hasattr(self, "status_filter") else "Все"
+        is_done_filter = None
+        if status_value == "Активные":
+            is_done_filter = False
+        elif status_value == "Выполненные":
+            is_done_filter = True
+
+        all_tasks = task_service.list_tasks(
+            self.db_path,
+            search=query or None,
+            is_done=is_done_filter,
+        )
+        progress_map = {
+            task.id: task_service.subtask_progress(self.db_path, task.id) for task in all_tasks
+        }
+
+        subtasks_value = self.subtasks_filter.currentText() if hasattr(self, "subtasks_filter") else "Все"
+        if subtasks_value == "Есть подзадачи":
+            filtered_tasks = [task for task in all_tasks if progress_map[task.id][1] > 0]
+        elif subtasks_value == "Без подзадач":
+            filtered_tasks = [task for task in all_tasks if progress_map[task.id][1] == 0]
+        else:
+            filtered_tasks = all_tasks
+
+        sort_value = self.sort_mode.currentText() if hasattr(self, "sort_mode") else "Сначала новые"
+        if sort_value == "Сначала старые":
+            filtered_tasks.sort(key=lambda task: task.created_at)
+        elif sort_value == "Статус (активные → выполненные)":
+            filtered_tasks.sort(key=lambda task: (task.is_done, -task.created_at.timestamp()))
+        elif sort_value == "Подзадачи (по убыванию)":
+            filtered_tasks.sort(
+                key=lambda task: (progress_map[task.id][1], progress_map[task.id][0], task.created_at.timestamp()),
+                reverse=True,
+            )
+
+        self._tasks_cache = filtered_tasks
         self._tasks_by_id = {task.id: task for task in self._tasks_cache}
 
         self.tasks_list.clear()
         for task in self._tasks_cache:
-            done_subtasks, total_subtasks = task_service.subtask_progress(self.db_path, task.id)
+            done_subtasks, total_subtasks = progress_map[task.id]
             reminder_flag = "⏰ " if task.reminder_datetime else ""
-            text = f"[{'✓' if task.is_done else ' '}] {reminder_flag}{task.title}"
-            progress = f"{done_subtasks}/{total_subtasks}" if total_subtasks else "-"
+            subtask_badge = "🧩 " if total_subtasks else ""
+            text = f"[{'✓' if task.is_done else ' '}] {subtask_badge}{reminder_flag}{task.title}"
+            progress = f"{done_subtasks}/{total_subtasks} · подзадач: {total_subtasks}"
             root_item = QTreeWidgetItem([text, progress])
             root_item.setData(0, Qt.ItemDataRole.UserRole, task.id)
             self.tasks_list.addTopLevelItem(root_item)
