@@ -804,6 +804,18 @@ class TaskPickerDialog(QDialog):
         self.accept()
 
 
+class NoteTextEdit(QTextEdit):
+    focus_changed = Signal(bool)
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        self.focus_changed.emit(True)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.focus_changed.emit(False)
+
+
 class TaskQtWindow(QMainWindow):
     def __init__(self, db_path: Path):
         super().__init__()
@@ -970,14 +982,25 @@ class TaskQtWindow(QMainWindow):
         self.has_due_checkbox.toggled.connect(self.due_input.setEnabled)
         form.addRow("Дата и время дедлайна", self.due_input)
 
-        self.note_toolbar = QToolBar("Форматирование", self)
-        self._build_note_toolbar()
-        right_layout.addWidget(self.note_toolbar)
+        self.note_section = QFrame(self)
+        self.note_section.setObjectName("noteSection")
+        note_section_layout = QVBoxLayout(self.note_section)
+        note_section_layout.setContentsMargins(8, 8, 8, 8)
+        note_section_layout.setSpacing(6)
 
-        self.note_input = QTextEdit(self)
+        self.note_toolbar = QToolBar("Форматирование", self.note_section)
+        self.note_toolbar.setObjectName("noteToolbar")
+        self.note_toolbar.setIconSize(QSize(14, 14))
+        note_section_layout.addWidget(self.note_toolbar)
+
+        self.note_input = NoteTextEdit(self.note_section)
         self.note_input.setPlaceholderText("Заметка (поддерживает форматирование)")
         self.note_input.setFixedHeight(180)
-        form.addRow("Заметка", self.note_input)
+        self.note_input.focus_changed.connect(self._update_note_toolbar_state)
+        note_section_layout.addWidget(self.note_input)
+        self._build_note_toolbar()
+
+        form.addRow("Заметка", self.note_section)
         right_layout.addLayout(form)
 
         right_layout.addWidget(QLabel("Вложения", self))
@@ -1031,41 +1054,103 @@ class TaskQtWindow(QMainWindow):
         if qss_path.exists():
             self.tasks_list.setStyleSheet(qss_path.read_text(encoding="utf-8"))
 
+        self.note_section.setStyleSheet(
+            """
+            QFrame#noteSection {
+                border: 1px solid #D2DCE8;
+                border-radius: 8px;
+                background-color: #F7F9FC;
+            }
+            QToolBar#noteToolbar {
+                border: 0;
+                background: transparent;
+                spacing: 4px;
+                padding: 0px;
+            }
+            QToolBar#noteToolbar:disabled {
+                color: #9AA6B2;
+            }
+            """
+        )
+
     def _build_note_toolbar(self) -> None:
+        self._note_toolbar_actions: list[QAction] = []
+
         bold_action = QAction("Ж", self)
-        bold_action.triggered.connect(lambda: self.note_input.setFontWeight(700 if self.note_input.fontWeight() < 700 else 400))
+        bold_action.triggered.connect(lambda: self._apply_note_format("bold"))
         self.note_toolbar.addAction(bold_action)
+        self._note_toolbar_actions.append(bold_action)
 
         italic_action = QAction("К", self)
-        italic_action.triggered.connect(lambda: self.note_input.setFontItalic(not self.note_input.fontItalic()))
+        italic_action.triggered.connect(lambda: self._apply_note_format("italic"))
         self.note_toolbar.addAction(italic_action)
-
-        underline_action = QAction("Ч", self)
-        underline_action.triggered.connect(lambda: self.note_input.setFontUnderline(not self.note_input.fontUnderline()))
-        self.note_toolbar.addAction(underline_action)
+        self._note_toolbar_actions.append(italic_action)
 
         self.note_toolbar.addSeparator()
 
         bullet_action = QAction("• Список", self)
-        bullet_action.triggered.connect(lambda: self.note_input.insertHtml("<ul><li></li></ul>"))
+        bullet_action.triggered.connect(lambda: self._apply_note_format("bulleted_list"))
         self.note_toolbar.addAction(bullet_action)
+        self._note_toolbar_actions.append(bullet_action)
 
         numbered_action = QAction("1. Список", self)
-        numbered_action.triggered.connect(lambda: self.note_input.insertHtml("<ol><li></li></ol>"))
+        numbered_action.triggered.connect(lambda: self._apply_note_format("numbered_list"))
         self.note_toolbar.addAction(numbered_action)
+        self._note_toolbar_actions.append(numbered_action)
 
         self.note_toolbar.addSeparator()
 
         h_action = QAction("H2", self)
-        h_action.triggered.connect(lambda: self._wrap_selection_with_tag("h2"))
+        h_action.triggered.connect(lambda: self._apply_note_format("heading"))
         self.note_toolbar.addAction(h_action)
+        self._note_toolbar_actions.append(h_action)
 
         quote_action = QAction("Цитата", self)
-        quote_action.triggered.connect(lambda: self._wrap_selection_with_tag("blockquote"))
+        quote_action.triggered.connect(lambda: self._apply_note_format("quote"))
         self.note_toolbar.addAction(quote_action)
+        self._note_toolbar_actions.append(quote_action)
 
-    def _wrap_selection_with_tag(self, tag: str) -> None:
-        cursor = self.note_input.textCursor()
+        self._update_note_toolbar_state()
+
+    def _active_note_editor(self) -> Optional[NoteTextEdit]:
+        if self.note_input.hasFocus():
+            return self.note_input
+        return None
+
+    def _update_note_toolbar_state(self, *_args) -> None:
+        editor = self._active_note_editor()
+        toolbar_enabled = editor is not None and not editor.isReadOnly()
+        self.note_toolbar.setEnabled(toolbar_enabled)
+        for action in getattr(self, "_note_toolbar_actions", []):
+            action.setEnabled(toolbar_enabled)
+
+    def _apply_note_format(self, format_type: str) -> None:
+        editor = self._active_note_editor()
+        if editor is None or editor.isReadOnly():
+            return
+        if format_type == "bold":
+            editor.setFontWeight(700 if editor.fontWeight() < 700 else 400)
+            return
+        if format_type == "italic":
+            editor.setFontItalic(not editor.fontItalic())
+            return
+        if format_type == "bulleted_list":
+            editor.insertHtml("<ul><li></li></ul>")
+            return
+        if format_type == "numbered_list":
+            editor.insertHtml("<ol><li></li></ol>")
+            return
+        if format_type == "heading":
+            self._wrap_selection_with_tag("h2", editor)
+            return
+        if format_type == "quote":
+            self._wrap_selection_with_tag("blockquote", editor)
+
+    def _wrap_selection_with_tag(self, tag: str, editor: Optional[NoteTextEdit] = None) -> None:
+        target_editor = editor or self._active_note_editor()
+        if target_editor is None:
+            return
+        cursor = target_editor.textCursor()
         selected = cursor.selectedText().strip()
         if not selected:
             selected = "Текст"
@@ -1339,6 +1424,7 @@ class TaskQtWindow(QMainWindow):
         self.note_input.setHtml("")
         self.priority_input.setCurrentText("Средний")
         self.attachments_list.clear()
+        self._update_note_toolbar_state()
 
     def _open_selected_item_card(self) -> None:
         self.on_selection_changed()
@@ -1365,6 +1451,7 @@ class TaskQtWindow(QMainWindow):
             self.due_input.setDateTime(subtask.due_datetime or datetime.now())
             self.priority_input.setCurrentText(_priority_to_label(subtask.priority))
             self._load_attachments("subtask", subtask.id)
+            self._update_note_toolbar_state()
             return
 
         task = self._selected_task()
@@ -1381,6 +1468,7 @@ class TaskQtWindow(QMainWindow):
         self.due_input.setDateTime(task.due_datetime or datetime.now())
         self.priority_input.setCurrentText(_priority_to_label(task.priority))
         self._load_attachments("task", task.id)
+        self._update_note_toolbar_state()
 
     def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if self._is_refreshing_tree or column != 0:

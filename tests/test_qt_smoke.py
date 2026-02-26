@@ -285,3 +285,41 @@ def test_graph_dialog_updates_after_subtask_deletion(app_instance, tmp_path):
     assert all(edge.relation_type != "hierarchy" for edge in edges)
 
     dialog.close()
+
+
+def test_note_toolbar_scoped_to_note_editor(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt.db")
+    created = tasks.create_task(db_path, "Фокус")
+
+    window = TaskQtWindow(db_path)
+    window.show()
+    app_instance.processEvents()
+    window._select_task_in_tree(created.id)
+    app_instance.processEvents()
+
+    assert not window.note_toolbar.isEnabled()
+
+    window.note_input.setFocus()
+    app_instance.processEvents()
+    assert window.note_toolbar.isEnabled()
+
+    window.note_input.setPlainText("тест")
+    window.note_input.selectAll()
+    bold_action = next(action for action in window.note_toolbar.actions() if action.text() == "Ж")
+    bold_action.trigger()
+    app_instance.processEvents()
+
+    assert "font-weight" in window.note_input.toHtml().lower()
+    assert window.title_input.text() == "Фокус"
+
+    window.title_input.setFocus()
+    app_instance.processEvents()
+    assert not window.note_toolbar.isEnabled()
+
+    window.note_input.setReadOnly(True)
+    window.note_input.setFocus()
+    app_instance.processEvents()
+    window._update_note_toolbar_state()
+    assert not window.note_toolbar.isEnabled()
+
+    window.close()
