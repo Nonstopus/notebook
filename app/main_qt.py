@@ -224,6 +224,10 @@ class TaskQtWindow(QMainWindow):
         delete_btn.clicked.connect(self.delete_task)
         actions.addWidget(delete_btn)
 
+        convert_btn = QPushButton("Сделать подзадачей", self)
+        convert_btn.clicked.connect(self.convert_task_to_subtask)
+        actions.addWidget(convert_btn)
+
         refresh_btn = QPushButton("Обновить", self)
         refresh_btn.clicked.connect(self.refresh_tasks)
         actions.addWidget(refresh_btn)
@@ -299,6 +303,42 @@ class TaskQtWindow(QMainWindow):
             return
 
         task_service.delete_task(self.db_path, task.id)
+        self.refresh_tasks()
+
+    def convert_task_to_subtask(self) -> None:
+        child_task = self._selected_task()
+        if child_task is None:
+            QMessageBox.information(self, "Выберите задачу", "Выберите задачу для преобразования")
+            return
+
+        parent_options = [task for task in self._tasks_cache if task.id != child_task.id]
+        if not parent_options:
+            QMessageBox.information(
+                self,
+                "Недостаточно задач",
+                "Нужна хотя бы ещё одна задача, чтобы выбрать родителя",
+            )
+            return
+
+        option_labels = [f"#{task.id} {task.title}" for task in parent_options]
+        selected_label, ok = QInputDialog.getItem(
+            self,
+            "Сделать подзадачей",
+            "Выберите родительскую задачу",
+            option_labels,
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        selected_index = option_labels.index(selected_label)
+        parent_task = parent_options[selected_index]
+        converted = task_service.convert_task_to_subtask(self.db_path, child_task.id, parent_task.id)
+        if not converted:
+            QMessageBox.warning(self, "Ошибка", "Не удалось преобразовать задачу")
+            return
+
         self.refresh_tasks()
 
 

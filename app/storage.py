@@ -253,25 +253,29 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
     if child_task_id == parent_task_id:
         raise ValueError("Нельзя сделать задачу подзадачей самой себя")
 
-    child_task = get_task(db_path, child_task_id)
-    parent_task = get_task(db_path, parent_task_id)
-    if not child_task or not parent_task:
-        return None
+    with get_conn(db_path) as conn:
+        child_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (child_task_id,)).fetchone()
+        parent_exists = conn.execute("SELECT id FROM tasks WHERE id = ?", (parent_task_id,)).fetchone()
+        if not child_row or not parent_exists:
+            return None
 
-    created_subtask = create_subtask(db_path, parent_task_id, child_task.title)
-    if not created_subtask:
-        return None
+        now = _now()
+        cursor = conn.execute(
+            """
+            INSERT INTO subtasks (task_id, title, is_done, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (parent_task_id, child_row["title"], child_row["is_done"], now, now),
+        )
+        subtask_row = conn.execute(
+            "SELECT * FROM subtasks WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
 
-    if child_task.is_done:
-        updated_subtask = update_subtask(db_path, created_subtask.id, is_done=True)
-        if updated_subtask:
-            created_subtask = updated_subtask
+        deleted_cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (child_task_id,))
+        if deleted_cursor.rowcount == 0:
+            return None
 
-    deleted = delete_task(db_path, child_task_id)
-    if not deleted:
-        return None
-
-    return created_subtask
+    return _row_to_subtask(subtask_row)
 
 
 def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]:
