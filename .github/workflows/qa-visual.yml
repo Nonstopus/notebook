@@ -1,0 +1,69 @@
+name: QA Visual Regression
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      visual_override:
+        description: "Manual override for known visual diff"
+        required: false
+        default: "false"
+
+jobs:
+  visual-golden-check:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    outputs:
+      result: ${{ steps.visual-tests.outcome }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run visual golden tests
+        id: visual-tests
+        run: pytest tests/test_qt_card_golden.py -q
+
+      - name: Upload visual artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-task-card-visual-artifacts
+          path: tests/artifacts/task_card/*.png
+          if-no-files-found: warn
+
+  enforce-qa-visual-gate:
+    needs: visual-golden-check
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Enforce manual confirmation on mismatch
+        env:
+          VISUAL_RESULT: ${{ needs.visual-golden-check.outputs.result }}
+          VISUAL_OVERRIDE: ${{ github.event.inputs.visual_override || 'false' }}
+        run: |
+          echo "visual_result=${VISUAL_RESULT}"
+          echo "visual_override=${VISUAL_OVERRIDE}"
+
+          if [ "${VISUAL_RESULT}" = "success" ]; then
+            echo "Visual regression check passed."
+            exit 0
+          fi
+
+          if [ "${VISUAL_OVERRIDE}" = "true" ]; then
+            echo "Visual mismatch manually approved via workflow_dispatch override."
+            exit 0
+          fi
+
+          echo "Visual mismatch detected."
+          echo "Artifacts have been uploaded. Review and rerun workflow with visual_override=true after manual confirmation."
+          exit 1
