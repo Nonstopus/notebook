@@ -10,7 +10,7 @@ def run_cli(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_cli_add_and_list(tmp_path):
-    run_cli(tmp_path, "add", "Купить молоко", "--due-datetime", "2030-01-01 10:00")
+    run_cli(tmp_path, "add", "Купить молоко", "--due-datetime", "2030-01-01 10:00", "--priority", "high")
     result = run_cli(tmp_path, "list")
     assert "Купить молоко" in result.stdout
     assert "due_datetime=2030-01-01 10:00" in result.stdout
@@ -68,3 +68,9 @@ def test_cli_convert_to_subtask_parent_not_found(tmp_path):
     run_cli(tmp_path, "add", "Обычная")
     result = run_cli(tmp_path, "convert-to-subtask", "1", "999")
     assert "Родительская задача #999 не найдена" in result.stdout
+
+
+def test_cli_update_priority(tmp_path):
+    run_cli(tmp_path, "add", "Сделать задачу")
+    updated = run_cli(tmp_path, "update", "1", "--priority", "critical")
+    assert "Обновлено" in updated.stdout

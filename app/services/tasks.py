@@ -6,13 +6,20 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from app import storage
 
-from app.models import Board, BoardColumn, BoardItem, Subtask, Task
+from app.models import ALLOWED_PRIORITIES, Board, BoardColumn, BoardItem, Subtask, Task
 
 
 UNSET_DUE_DATETIME = object()
 UNSET_BOARD_FIELD = object()
 ConvertToSubtaskError = storage.ConvertToSubtaskError
 BoardValidationError = storage.BoardValidationError
+
+def _validate_priority(priority: str) -> str:
+    normalized = priority.strip().lower()
+    if normalized not in ALLOWED_PRIORITIES:
+        allowed = "|".join(ALLOWED_PRIORITIES)
+        raise ValueError(f"Недопустимый приоритет '{priority}'. Допустимо: {allowed}")
+    return normalized
 
 
 def init_db(db_path: Path) -> None:
@@ -25,13 +32,16 @@ def create_task(
     reminder_datetime: Optional[datetime] = None,
     due_datetime: Optional[datetime] = None,
     note: Optional[str] = None,
+    priority: str = "medium",
 ) -> Task:
+    validated_priority = _validate_priority(priority)
     return storage.create_task(
         db_path,
         title=title,
         reminder_datetime=reminder_datetime,
         due_datetime=due_datetime,
         note=note,
+        priority=validated_priority,
     )
 
 
@@ -68,6 +78,7 @@ def update_task(
     reminder_datetime: Optional[Optional[datetime]] = None,
     due_datetime: Optional[Optional[datetime]] | object = UNSET_DUE_DATETIME,
     note: Optional[Optional[str]] = None,
+    priority: Optional[str] = None,
 ) -> Optional[Task]:
     kwargs = {
         "title": title,
@@ -77,6 +88,8 @@ def update_task(
     }
     if due_datetime is not UNSET_DUE_DATETIME:
         kwargs["due_datetime"] = due_datetime
+    if priority is not None:
+        kwargs["priority"] = _validate_priority(priority)
     return storage.update_task(db_path, task_id, **kwargs)
 
 
@@ -88,8 +101,9 @@ def due_reminders(db_path: Path, now: Optional[datetime] = None) -> Iterable[Tas
     return storage.due_reminders(db_path, now=now)
 
 
-def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]:
-    return storage.create_subtask(db_path, task_id, title)
+def create_subtask(db_path: Path, task_id: int, title: str, priority: str = "medium") -> Optional[Subtask]:
+    validated_priority = _validate_priority(priority)
+    return storage.create_subtask(db_path, task_id, title, validated_priority)
 
 
 def list_subtasks(db_path: Path, task_id: int) -> List[Subtask]:
@@ -109,6 +123,7 @@ def update_subtask(
     reminder_datetime: Optional[Optional[datetime]] = None,
     due_datetime: Optional[Optional[datetime]] | object = UNSET_DUE_DATETIME,
     note: Optional[Optional[str]] = None,
+    priority: Optional[str] = None,
 ) -> Optional[Subtask]:
     kwargs = {
         "title": title,
@@ -118,6 +133,8 @@ def update_subtask(
     }
     if due_datetime is not UNSET_DUE_DATETIME:
         kwargs["due_datetime"] = due_datetime
+    if priority is not None:
+        kwargs["priority"] = _validate_priority(priority)
     return storage.update_subtask(db_path, subtask_id, **kwargs)
 
 

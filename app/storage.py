@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
-from .models import Board, BoardColumn, BoardItem, Subtask, Task
+from .models import ALLOWED_PRIORITIES, Board, BoardColumn, BoardItem, Subtask, Task
 
 DB_NAME = "data.db"
 _UNSET = object()
@@ -18,6 +18,10 @@ class ConvertToSubtaskError(ValueError):
 
 class BoardValidationError(ValueError):
     """Domain validation error for board operations."""
+
+
+class PriorityValidationError(ValueError):
+    """Domain validation error for task and subtask priority."""
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -49,13 +53,16 @@ def init_db(db_path: Path) -> None:
                 updated_at TEXT NOT NULL,
                 reminder_datetime TEXT,
                 due_datetime TEXT,
-                note TEXT
+                note TEXT,
+                priority TEXT NOT NULL DEFAULT 'medium'
             );
             """
         )
         task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
         if "due_datetime" not in task_columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN due_datetime TEXT")
+        if "priority" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'")
 
         conn.execute(
             """
@@ -70,6 +77,7 @@ def init_db(db_path: Path) -> None:
                 reminder_datetime TEXT,
                 due_datetime TEXT,
                 note TEXT,
+                priority TEXT NOT NULL DEFAULT 'medium',
                 FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
             """
@@ -83,6 +91,8 @@ def init_db(db_path: Path) -> None:
             conn.execute("ALTER TABLE subtasks ADD COLUMN note TEXT")
         if "position" not in subtask_columns:
             conn.execute("ALTER TABLE subtasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+        if "priority" not in subtask_columns:
+            conn.execute("ALTER TABLE subtasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'")
 
         conn.execute(
             """
@@ -181,6 +191,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         reminder_datetime=datetime.fromisoformat(row["reminder_datetime"]) if row["reminder_datetime"] else None,
         due_datetime=datetime.fromisoformat(row["due_datetime"]) if row["due_datetime"] else None,
         note=row["note"],
+        priority=row["priority"],
     )
 
 
@@ -196,7 +207,16 @@ def _row_to_subtask(row: sqlite3.Row) -> Subtask:
         reminder_datetime=datetime.fromisoformat(row["reminder_datetime"]) if row["reminder_datetime"] else None,
         due_datetime=datetime.fromisoformat(row["due_datetime"]) if row["due_datetime"] else None,
         note=row["note"],
+        priority=row["priority"],
     )
+
+
+def _validate_priority(priority: str) -> str:
+    normalized = priority.strip().lower()
+    if normalized not in ALLOWED_PRIORITIES:
+        allowed = "|".join(ALLOWED_PRIORITIES)
+        raise PriorityValidationError(f"Недопустимый приоритет '{priority}'. Допустимо: {allowed}")
+    return normalized
 
 
 def _now() -> str:
@@ -245,17 +265,19 @@ def create_task(
     reminder_datetime: Optional[datetime] = None,
     due_datetime: Optional[datetime] = None,
     note: Optional[str] = None,
+    priority: str = "medium",
 ) -> Task:
+    validated_priority = _validate_priority(priority)
     created_at = _now()
     reminder_value = reminder_datetime.isoformat() if reminder_datetime else None
     due_value = due_datetime.isoformat() if due_datetime else None
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT INTO tasks (title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note)
-            VALUES (?, 0, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note, priority)
+            VALUES (?, 0, ?, ?, ?, ?, ?, ?)
             """,
-            (title, created_at, created_at, reminder_value, due_value, note),
+            (title, created_at, created_at, reminder_value, due_value, note, validated_priority),
         )
         task_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -320,6 +342,7 @@ def update_task(
     reminder_datetime: Optional[Optional[datetime]] = None,
     due_datetime: Optional[Optional[datetime]] | object = _UNSET,
     note: Optional[Optional[str]] = None,
+    priority: Optional[str] = None,
 ) -> Optional[Task]:
     task = get_task(db_path, task_id)
     if not task:
@@ -344,6 +367,9 @@ def update_task(
     if note is not None:
         updates.append("note = ?")
         values.append(note)
+    if priority is not None:
+        updates.append("priority = ?")
+        values.append(_validate_priority(priority))
 
     if not updates:
         return task
@@ -406,9 +432,9 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
         cursor = conn.execute(
             """
             INSERT INTO subtasks (
-                task_id, position, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note
+                task_id, position, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note, priority
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 parent_task_id,
@@ -420,6 +446,7 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
                 child_row["reminder_datetime"],
                 child_row["due_datetime"],
                 child_row["note"],
+                child_row["priority"],
             ),
         )
         subtask_row = conn.execute(
@@ -433,9 +460,10 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
     return _row_to_subtask(subtask_row)
 
 
-def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]:
+def create_subtask(db_path: Path, task_id: int, title: str, priority: str = "medium") -> Optional[Subtask]:
     if not get_task(db_path, task_id):
         return None
+    validated_priority = _validate_priority(priority)
     created_at = _now()
     with get_conn(db_path) as conn:
         next_position = conn.execute(
@@ -445,11 +473,11 @@ def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]
         cursor = conn.execute(
             """
             INSERT INTO subtasks (
-                task_id, position, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note
+                task_id, position, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note, priority
             )
-            VALUES (?, ?, ?, 0, ?, ?, NULL, NULL, NULL)
+            VALUES (?, ?, ?, 0, ?, ?, NULL, NULL, NULL, ?)
             """,
-            (task_id, next_position, title, created_at, created_at),
+            (task_id, next_position, title, created_at, created_at, validated_priority),
         )
         subtask_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
@@ -546,6 +574,7 @@ def update_subtask(
     reminder_datetime: Optional[Optional[datetime]] = None,
     due_datetime: Optional[Optional[datetime]] | object = _UNSET,
     note: Optional[Optional[str]] = None,
+    priority: Optional[str] = None,
 ) -> Optional[Subtask]:
     with get_conn(db_path) as conn:
         row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
@@ -568,6 +597,9 @@ def update_subtask(
         if note is not None:
             updates.append("note = ?")
             values.append(note)
+        if priority is not None:
+            updates.append("priority = ?")
+            values.append(_validate_priority(priority))
         if not updates:
             return _row_to_subtask(row)
         updates.append("updated_at = ?")

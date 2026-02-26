@@ -6,6 +6,18 @@ from enum import Enum
 from typing import Optional
 
 
+PRIORITY_LOW = "low"
+PRIORITY_MEDIUM = "medium"
+PRIORITY_HIGH = "high"
+PRIORITY_CRITICAL = "critical"
+ALLOWED_PRIORITIES = (
+    PRIORITY_LOW,
+    PRIORITY_MEDIUM,
+    PRIORITY_HIGH,
+    PRIORITY_CRITICAL,
+)
+
+
 @dataclass
 class Task:
     id: int
@@ -16,6 +28,7 @@ class Task:
     reminder_datetime: Optional[datetime]
     due_datetime: Optional[datetime]
     note: Optional[str]
+    priority: str
 
 
 @dataclass
@@ -30,6 +43,7 @@ class Subtask:
     reminder_datetime: Optional[datetime]
     due_datetime: Optional[datetime]
     note: Optional[str]
+    priority: str
 
 
 class ItemKind(str, Enum):
