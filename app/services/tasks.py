@@ -30,6 +30,10 @@ def init_db(db_path: Path) -> None:
     storage.init_db(db_path)
 
 
+def repair_sanitized_notes(db_path: Path) -> Dict[str, int]:
+    return storage.repair_sanitized_notes(db_path)
+
+
 def create_task(
     db_path: Path,
     title: str,
