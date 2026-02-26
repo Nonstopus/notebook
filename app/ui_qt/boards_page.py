@@ -21,13 +21,35 @@ class BoardColumnList(QListWidget):
         super().__init__(parent)
         self.column_id = column_id
         self._on_drop = on_drop
-        self.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QListWidget.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setDragDropOverwriteMode(False)
+        self.setDropIndicatorShown(True)
         self.setAlternatingRowColors(True)
 
+    def dragEnterEvent(self, event) -> None:
+        if event.source() and isinstance(event.source(), QListWidget):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
     def dropEvent(self, event) -> None:
+        source_widget = event.source() if isinstance(event.source(), BoardColumnList) else None
+        dragged_item = source_widget.currentItem() if source_widget else None
+        dragged_board_item_id = None
+        if dragged_item is not None:
+            dragged_board_item_id = dragged_item.data(Qt.ItemDataRole.UserRole)
+
         super().dropEvent(event)
-        self._on_drop(self)
+
+        target_position = self.indexAt(event.position().toPoint()).row()
+        if target_position < 0:
+            target_position = self.count() - 1
+
+        if dragged_board_item_id is not None and target_position >= 0:
+            self._on_drop(self.column_id, int(dragged_board_item_id), target_position)
 
 
 class BoardsPage(QWidget):
@@ -94,7 +116,8 @@ class BoardsPage(QWidget):
             if not task or item.column_id not in self.column_widgets:
                 continue
             list_item = QListWidgetItem(f"#{task.id} {task.title}")
-            list_item.setData(Qt.ItemDataRole.UserRole, task.id)
+            list_item.setData(Qt.ItemDataRole.UserRole, item.id)
+            list_item.setFlags(list_item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
             self.column_widgets[item.column_id].addItem(list_item)
 
         # Автоматически добавляем неразмещённые задачи в первую колонку доски.
@@ -105,21 +128,14 @@ class BoardsPage(QWidget):
                     self.column_widgets[existing.column_id].item(i).data(Qt.ItemDataRole.UserRole)
                     for i in range(self.column_widgets[existing.column_id].count())
                 ]
-                if task.id not in already:
+                if existing.id not in already:
                     item_widget = QListWidgetItem(f"#{task.id} {task.title}")
-                    item_widget.setData(Qt.ItemDataRole.UserRole, task.id)
+                    item_widget.setData(Qt.ItemDataRole.UserRole, existing.id)
+                    item_widget.setFlags(item_widget.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                     self.column_widgets[existing.column_id].addItem(item_widget)
 
-    def _persist_column_order(self, changed_widget: BoardColumnList) -> None:
-        board_id = self._active_board_id()
-        if board_id is None:
-            return
-
-        for column_id, widget in self.column_widgets.items():
-            for position in range(widget.count()):
-                item = widget.item(position)
-                task_id = int(item.data(Qt.ItemDataRole.UserRole))
-                task_service.move_board_item(self.db_path, board_id, task_id, column_id, position)
+    def _persist_column_order(self, target_column_id: int, board_item_id: int, target_position: int) -> None:
+        task_service.move_board_item_by_id(self.db_path, board_item_id, target_column_id, target_position)
 
     def refresh_boards(self) -> None:
         boards = task_service.list_boards(self.db_path)

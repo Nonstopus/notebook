@@ -198,6 +198,23 @@ def test_board_service_multi_board_statuses_and_moves(tmp_path):
     assert [item.task_id for item in second_board_items if item.column_id == review.id] == [task_a.id]
 
 
+def test_board_service_move_by_board_item_id(tmp_path):
+    db_path = temp_db(tmp_path)
+    board = tasks.create_board(db_path, "Team A", ["Todo", "Doing"])
+    todo, doing = tasks.list_board_columns(db_path, board.id)
+
+    task_a = tasks.create_task(db_path, "Task A")
+    task_b = tasks.create_task(db_path, "Task B")
+    item_a = tasks.move_board_item(db_path, board.id, task_a.id, todo.id, 0)
+    tasks.move_board_item(db_path, board.id, task_b.id, todo.id, 1)
+
+    moved = tasks.move_board_item_by_id(db_path, item_a.id, doing.id, 0)
+    assert moved.column_id == doing.id
+
+    board_items = tasks.list_board_items(db_path, board.id)
+    assert [item.task_id for item in board_items if item.column_id == doing.id] == [task_a.id]
+
+
 
 def test_board_service_column_validation_and_reorder(tmp_path):
     db_path = temp_db(tmp_path)
@@ -220,4 +237,3 @@ def test_board_service_column_validation_and_reorder(tmp_path):
 
     reordered = tasks.reorder_board_columns(db_path, board.id, [created.id, columns[0].id, columns[1].id])
     assert [column.id for column in reordered] == [created.id, columns[0].id, columns[1].id]
-

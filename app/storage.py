@@ -940,6 +940,13 @@ def _repack_column_positions(conn: sqlite3.Connection, column_id: int) -> None:
         conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, row["id"]))
 
 
+def _rewrite_column_positions(conn: sqlite3.Connection, column_id: int, ordered_item_ids: List[int]) -> None:
+    for offset, item_id in enumerate(ordered_item_ids):
+        conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (100000 + offset, item_id))
+    for position, item_id in enumerate(ordered_item_ids):
+        conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, item_id))
+
+
 def list_board_items(db_path: Path, board_id: int) -> List[BoardItem]:
     with get_conn(db_path) as conn:
         rows = conn.execute(
@@ -956,6 +963,14 @@ def move_board_item(
     column_id: int,
     position: int,
 ) -> BoardItem:
+    with get_conn(db_path) as conn:
+        item = conn.execute(
+            "SELECT id FROM board_items WHERE board_id = ? AND task_id = ?",
+            (board_id, task_id),
+        ).fetchone()
+        if item:
+            return move_board_item_by_id(db_path, item["id"], column_id, position)
+
     if position < 0:
         raise BoardValidationError("Позиция должна быть неотрицательной")
 
@@ -975,49 +990,86 @@ def move_board_item(
         if not target_column or target_column["board_id"] != board_id:
             raise BoardValidationError("Колонка не принадлежит указанной доске")
 
-        item = conn.execute(
-            "SELECT * FROM board_items WHERE board_id = ? AND task_id = ?",
-            (board_id, task_id),
-        ).fetchone()
-
-        if item:
-            old_column_id = item["column_id"]
-            item_id = item["id"]
-            conn.execute("DELETE FROM board_items WHERE id = ?", (item_id,))
-            _repack_column_positions(conn, old_column_id)
-        else:
-            item_id = None
-
-        target_count = conn.execute(
-            "SELECT COUNT(*) AS count FROM board_items WHERE column_id = ?",
-            (column_id,),
-        ).fetchone()["count"]
-        normalized_position = min(position, target_count)
-
-        conn.execute(
-            "UPDATE board_items SET position = position + 1 WHERE column_id = ? AND position >= ?",
-            (column_id, normalized_position),
+        cursor = conn.execute(
+            """
+            INSERT INTO board_items (board_id, task_id, column_id, position)
+            VALUES (?, ?, ?, ?)
+            """,
+            (board_id, task_id, column_id, 10**9),
         )
+        item_id = cursor.lastrowid
 
-        if item_id is None:
-            cursor = conn.execute(
-                """
-                INSERT INTO board_items (board_id, task_id, column_id, position)
-                VALUES (?, ?, ?, ?)
-                """,
-                (board_id, task_id, column_id, normalized_position),
-            )
-            item_id = cursor.lastrowid
+    return move_board_item_by_id(db_path, item_id, column_id, position)
+
+
+def move_board_item_by_id(
+    db_path: Path,
+    board_item_id: int,
+    target_column_id: int,
+    target_position: int,
+) -> BoardItem:
+    if target_position < 0:
+        raise BoardValidationError("Позиция должна быть неотрицательной")
+
+    with get_conn(db_path) as conn:
+        item = conn.execute("SELECT * FROM board_items WHERE id = ?", (board_item_id,)).fetchone()
+        if not item:
+            raise BoardValidationError(f"Элемент доски #{board_item_id} не найден")
+
+        target_column = conn.execute(
+            "SELECT id, board_id FROM board_columns WHERE id = ?",
+            (target_column_id,),
+        ).fetchone()
+        if not target_column or target_column["board_id"] != item["board_id"]:
+            raise BoardValidationError("Колонка не принадлежит указанной доске")
+
+        source_column_id = item["column_id"]
+
+        source_ids = [
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM board_items WHERE column_id = ? ORDER BY position ASC, id ASC",
+                (source_column_id,),
+            ).fetchall()
+            if row["id"] != board_item_id
+        ]
+
+        if source_column_id == target_column_id:
+            insert_at = min(target_position, len(source_ids))
+            source_ids.insert(insert_at, board_item_id)
+            _rewrite_column_positions(conn, source_column_id, source_ids)
         else:
-            conn.execute(
-                """
-                INSERT INTO board_items (id, board_id, task_id, column_id, position)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (item_id, board_id, task_id, column_id, normalized_position),
-            )
+            target_ids = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM board_items WHERE column_id = ? ORDER BY position ASC, id ASC",
+                    (target_column_id,),
+                ).fetchall()
+            ]
+            insert_at = min(target_position, len(target_ids))
+            target_ids.insert(insert_at, board_item_id)
 
-        row = conn.execute("SELECT * FROM board_items WHERE id = ?", (item_id,)).fetchone()
+            source_max_position = conn.execute(
+                "SELECT COALESCE(MAX(position), -1) AS max_position FROM board_items WHERE column_id = ?",
+                (source_column_id,),
+            ).fetchone()["max_position"]
+            conn.execute(
+                "UPDATE board_items SET position = ? WHERE id = ?",
+                (source_max_position + 1, board_item_id),
+            )
+            _rewrite_column_positions(conn, source_column_id, source_ids)
+
+            target_max_position = conn.execute(
+                "SELECT COALESCE(MAX(position), -1) AS max_position FROM board_items WHERE column_id = ?",
+                (target_column_id,),
+            ).fetchone()["max_position"]
+            conn.execute(
+                "UPDATE board_items SET column_id = ?, position = ? WHERE id = ?",
+                (target_column_id, target_max_position + 1, board_item_id),
+            )
+            _rewrite_column_positions(conn, target_column_id, target_ids)
+
+        row = conn.execute("SELECT * FROM board_items WHERE id = ?", (board_item_id,)).fetchone()
 
     return _row_to_board_item(row)
 
