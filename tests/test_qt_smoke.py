@@ -119,7 +119,7 @@ def test_qt_main_entrypoint_smoke(monkeypatch, app_instance, tmp_path):
 
     monkeypatch.setattr(main_qt, "DB_PATH", Path(tmp_path / "entrypoint.db"))
     monkeypatch.setattr(main_qt, "QApplication", lambda argv: app_instance)
-    monkeypatch.setattr(TaskQtWindow, "show", lambda self: None)
+    monkeypatch.setattr("app.ui_qt.main_window.MainWindow.show", lambda self: None)
     monkeypatch.setattr(app_instance, "exec", lambda: 0)
 
     tasks.create_task(main_qt.DB_PATH, "Из entrypoint")
@@ -145,3 +145,23 @@ def test_qt_selected_row_text_contrast_smoke(app_instance, tmp_path):
     assert window.tasks_list.currentItem() is not None
 
     window.close()
+
+
+def test_main_window_restores_active_tab(app_instance, tmp_path):
+    from PySide6.QtCore import QSettings
+
+    from app.ui_qt.main_window import MainWindow
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
+
+    db_path = Path(tmp_path / "qt.db")
+    tasks.create_task(db_path, "Tab test")
+
+    first = MainWindow(db_path)
+    first.tabs.setCurrentIndex(1)
+    first.close()
+
+    second = MainWindow(db_path)
+    assert second.tabs.currentIndex() == 1
+    second.close()

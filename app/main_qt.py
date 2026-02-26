@@ -1029,8 +1029,10 @@ class TaskQtWindow(QMainWindow):
 
 
 def main() -> int:
+    from .ui_qt.main_window import MainWindow
+
     app = QApplication(sys.argv)
-    window = TaskQtWindow(DB_PATH)
+    window = MainWindow(DB_PATH)
     window.show()
     return app.exec()
 
