@@ -191,3 +191,39 @@ def test_convert_task_to_subtask_with_deleted_parent(tmp_path):
 
     assert converted is None
     assert storage.get_task(db_path, child.id) is not None
+
+
+def test_task_links_prevent_self_and_cycles(tmp_path):
+    db_path = temp_db(tmp_path)
+    first = storage.create_task(db_path, "A")
+    second = storage.create_task(db_path, "B")
+    third = storage.create_task(db_path, "C")
+
+    assert storage.create_task_link(db_path, first.id, first.id) is False
+    assert storage.create_task_link(db_path, first.id, second.id) is True
+    assert storage.create_task_link(db_path, second.id, third.id) is True
+    assert storage.create_task_link(db_path, third.id, first.id) is False
+
+    assert storage.list_task_links(db_path) == [
+        (first.id, second.id),
+        (second.id, third.id),
+    ]
+
+
+def test_task_layout_roundtrip(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Node")
+
+    assert storage.set_task_layout(db_path, task.id, 125.5, 77.25) is True
+    assert storage.get_task_layouts(db_path)[task.id] == (125.5, 77.25)
+
+    assert storage.set_task_layout(db_path, task.id, 300.0, 140.0) is True
+    assert storage.get_task_layouts(db_path)[task.id] == (300.0, 140.0)
+
+
+def test_delete_task_link_returns_false_for_missing_link(tmp_path):
+    db_path = temp_db(tmp_path)
+    first = storage.create_task(db_path, "A")
+    second = storage.create_task(db_path, "B")
+
+    assert storage.delete_task_link(db_path, first.id, second.id) is False

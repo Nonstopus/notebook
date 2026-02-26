@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
-from .models import Subtask, Task, TaskLink
+from .models import Subtask, Task
 
 DB_NAME = "data.db"
 _UNSET = object()
@@ -48,6 +48,7 @@ def init_db(db_path: Path) -> None:
         task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
         if "due_datetime" not in task_columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN due_datetime TEXT")
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS subtasks (
@@ -61,6 +62,7 @@ def init_db(db_path: Path) -> None:
             );
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS task_links (
@@ -73,6 +75,7 @@ def init_db(db_path: Path) -> None:
             );
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS task_layout (
@@ -106,16 +109,6 @@ def _row_to_subtask(row: sqlite3.Row) -> Subtask:
         is_done=bool(row["is_done"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
-    )
-
-
-def _row_to_task_link(row: sqlite3.Row) -> TaskLink:
-    return TaskLink(
-        id=row["id"],
-        from_task_id=row["from_task_id"],
-        to_task_id=row["to_task_id"],
-        link_type=row["link_type"],
-        created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
@@ -350,72 +343,24 @@ def subtask_progress(db_path: Path, task_id: int) -> Tuple[int, int]:
     return completed, total
 
 
-def create_task_link(
-    db_path: Path,
-    from_task_id: int,
-    to_task_id: int,
-    link_type: str = "sequence",
-) -> TaskLink:
-    created_at = _now()
+def _would_create_cycle(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
+    graph: Dict[int, List[int]] = {}
     with get_conn(db_path) as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO task_links (from_task_id, to_task_id, link_type, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (from_task_id, to_task_id, link_type, created_at),
-        )
-        link_id = cursor.lastrowid
-        row = conn.execute("SELECT * FROM task_links WHERE id = ?", (link_id,)).fetchone()
-    return _row_to_task_link(row)
+        rows = conn.execute("SELECT source_task_id, target_task_id FROM task_links").fetchall()
+    for row in rows:
+        graph.setdefault(row["source_task_id"], []).append(row["target_task_id"])
 
-
-def list_task_links(db_path: Path, task_id: Optional[int] = None) -> List[TaskLink]:
-    query = "SELECT * FROM task_links"
-    values: Tuple[int, ...] = ()
-    if task_id is not None:
-        query += " WHERE from_task_id = ? OR to_task_id = ?"
-        values = (task_id, task_id)
-    query += " ORDER BY created_at ASC"
-    with get_conn(db_path) as conn:
-        rows = conn.execute(query, values).fetchall()
-    return [_row_to_task_link(row) for row in rows]
-
-
-def delete_task_link(
-    db_path: Path,
-    link_id: Optional[int] = None,
-    *,
-    from_task_id: Optional[int] = None,
-    to_task_id: Optional[int] = None,
-) -> bool:
-    with get_conn(db_path) as conn:
-        if link_id is not None:
-            cursor = conn.execute("DELETE FROM task_links WHERE id = ?", (link_id,))
-        else:
-            if from_task_id is None or to_task_id is None:
-                raise ValueError("Either link_id or both from_task_id and to_task_id must be provided")
-            cursor = conn.execute(
-                "DELETE FROM task_links WHERE from_task_id = ? AND to_task_id = ?",
-                (from_task_id, to_task_id),
-            )
-    return cursor.rowcount > 0
-
-
-def due_reminders(db_path: Path, now: Optional[datetime] = None) -> Iterable[Task]:
-    moment = now or datetime.utcnow()
-    with get_conn(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM tasks
-            WHERE reminder_datetime IS NOT NULL
-              AND is_done = 0
-              AND reminder_datetime <= ?
-            ORDER BY reminder_datetime ASC
-            """,
-            (moment.isoformat(),),
-        ).fetchall()
-    return [_row_to_task(row) for row in rows]
+    stack = [target_task_id]
+    visited = set()
+    while stack:
+        node = stack.pop()
+        if node == source_task_id:
+            return True
+        if node in visited:
+            continue
+        visited.add(node)
+        stack.extend(graph.get(node, []))
+    return False
 
 
 def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
@@ -426,11 +371,20 @@ def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
     return [(row["source_task_id"], row["target_task_id"]) for row in rows]
 
 
-def create_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
+def create_task_link(
+    db_path: Path,
+    source_task_id: int,
+    target_task_id: int,
+    *,
+    prevent_cycles: bool = True,
+) -> bool:
     if source_task_id == target_task_id:
         return False
     if not get_task(db_path, source_task_id) or not get_task(db_path, target_task_id):
         return False
+    if prevent_cycles and _would_create_cycle(db_path, source_task_id, target_task_id):
+        return False
+
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
@@ -449,6 +403,22 @@ def delete_task_link(db_path: Path, source_task_id: int, target_task_id: int) ->
             (source_task_id, target_task_id),
         )
     return cursor.rowcount > 0
+
+
+def due_reminders(db_path: Path, now: Optional[datetime] = None) -> Iterable[Task]:
+    moment = now or datetime.utcnow()
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE reminder_datetime IS NOT NULL
+              AND is_done = 0
+              AND reminder_datetime <= ?
+            ORDER BY reminder_datetime ASC
+            """,
+            (moment.isoformat(),),
+        ).fetchall()
+    return [_row_to_task(row) for row in rows]
 
 
 def get_task_layouts(db_path: Path) -> Dict[int, Tuple[float, float]]:

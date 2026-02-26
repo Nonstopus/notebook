@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 from .services import tasks as task_service
 from .storage import DB_NAME
 
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QBrush, QPainter, QPen
     from PySide6.QtWidgets import (
         QApplication,
         QDateTimeEdit,
         QDialog,
+        QGraphicsEllipseItem,
+        QGraphicsLineItem,
+        QGraphicsScene,
+        QGraphicsSimpleTextItem,
+        QGraphicsView,
         QHBoxLayout,
         QInputDialog,
         QLabel,
@@ -33,6 +40,184 @@ except ImportError as exc:  # pragma: no cover - runtime guard for optional GUI 
 
 
 DB_PATH = Path(DB_NAME)
+NODE_WIDTH = 180
+NODE_HEIGHT = 70
+
+
+class GraphEdgeItem(QGraphicsLineItem):
+    def __init__(self, source_item: "GraphNodeItem", target_item: "GraphNodeItem"):
+        super().__init__()
+        self.source_item = source_item
+        self.target_item = target_item
+        self.setPen(QPen(Qt.GlobalColor.darkGray, 2))
+        self.setZValue(-1)
+        self.update_position()
+
+    def update_position(self) -> None:
+        source = self.source_item.scene_center()
+        target = self.target_item.scene_center()
+
+        dx = target.x() - source.x()
+        dy = target.y() - source.y()
+        length = max(1.0, math.hypot(dx, dy))
+        ux = dx / length
+        uy = dy / length
+
+        start = QPointF(
+            source.x() + ux * (NODE_WIDTH / 2),
+            source.y() + uy * (NODE_HEIGHT / 2),
+        )
+        end = QPointF(
+            target.x() - ux * (NODE_WIDTH / 2),
+            target.y() - uy * (NODE_HEIGHT / 2),
+        )
+        self.setLine(start.x(), start.y(), end.x(), end.y())
+
+
+class GraphNodeItem(QGraphicsEllipseItem):
+    def __init__(self, dialog: "TaskGraphDialog", task_id: int, title: str):
+        super().__init__(0, 0, NODE_WIDTH, NODE_HEIGHT)
+        self.dialog = dialog
+        self.task_id = task_id
+        self.edges = []
+
+        self.setPen(QPen(Qt.GlobalColor.black, 1))
+        self.setBrush(QBrush(Qt.GlobalColor.white))
+        self.setFlags(
+            QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable
+            | QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable
+        )
+
+        label = QGraphicsSimpleTextItem(f"#{task_id} {title}", self)
+        label.setPos(12, NODE_HEIGHT / 2 - 10)
+
+    def scene_center(self) -> QPointF:
+        return self.scenePos() + QPointF(NODE_WIDTH / 2, NODE_HEIGHT / 2)
+
+    def itemChange(self, change, value):
+        result = super().itemChange(change, value)
+        if change == QGraphicsEllipseItem.GraphicsItemChange.ItemPositionHasChanged:
+            for edge in self.edges:
+                edge.update_position()
+            self.dialog.persist_layout(self.task_id, result)
+        return result
+
+
+class TaskGraphDialog(QDialog):
+    def __init__(self, db_path: Path, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self._node_items: Dict[int, GraphNodeItem] = {}
+        self._graph_links: set[Tuple[int, int]] = set()
+
+        self.setWindowTitle("Граф задач")
+        self.resize(1000, 680)
+        self._build_ui()
+        self.refresh_graph()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        controls = QHBoxLayout()
+        add_link_btn = QPushButton("Создать связь", self)
+        add_link_btn.clicked.connect(self.add_link)
+        controls.addWidget(add_link_btn)
+
+        remove_link_btn = QPushButton("Удалить связь", self)
+        remove_link_btn.clicked.connect(self.remove_link)
+        controls.addWidget(remove_link_btn)
+
+        refresh_btn = QPushButton("Обновить", self)
+        refresh_btn.clicked.connect(self.refresh_graph)
+        controls.addWidget(refresh_btn)
+
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.scene = QGraphicsScene(self)
+        self.scene.setSceneRect(0, 0, 1600, 1100)
+
+        self.view = QGraphicsView(self.scene, self)
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        layout.addWidget(self.view)
+
+    def refresh_graph(self) -> None:
+        self.scene.clear()
+        self._node_items.clear()
+
+        all_tasks = task_service.list_tasks(self.db_path)
+        layouts = task_service.get_task_layouts(self.db_path)
+        self._graph_links = set(task_service.list_task_links(self.db_path))
+
+        for index, task in enumerate(all_tasks):
+            node = GraphNodeItem(self, task.id, task.title)
+            x, y = layouts.get(task.id, (80.0 + (index % 5) * 230.0, 80.0 + (index // 5) * 140.0))
+            node.setPos(float(x), float(y))
+            self.scene.addItem(node)
+            self._node_items[task.id] = node
+
+        for source_id, target_id in sorted(self._graph_links):
+            source_node = self._node_items.get(source_id)
+            target_node = self._node_items.get(target_id)
+            if not source_node or not target_node:
+                continue
+            edge = GraphEdgeItem(source_node, target_node)
+            self.scene.addItem(edge)
+            source_node.edges.append(edge)
+            target_node.edges.append(edge)
+
+    def persist_layout(self, task_id: int, position: QPointF) -> None:
+        task_service.set_task_layout(self.db_path, task_id, position.x(), position.y())
+
+    def _pick_task_id(self, title: str, options: list[Tuple[int, str]]) -> Optional[int]:
+        labels = [f"#{task_id} {name}" for task_id, name in options]
+        selected, ok = QInputDialog.getItem(self, title, "Выберите задачу", labels, 0, False)
+        if not ok:
+            return None
+        index = labels.index(selected)
+        return options[index][0]
+
+    def add_link(self) -> None:
+        all_tasks = task_service.list_tasks(self.db_path)
+        if len(all_tasks) < 2:
+            QMessageBox.information(self, "Недостаточно задач", "Нужно минимум две задачи")
+            return
+
+        options = [(task.id, task.title) for task in all_tasks]
+        source_id = self._pick_task_id("Источник связи", options)
+        if source_id is None:
+            return
+
+        target_options = [pair for pair in options if pair[0] != source_id]
+        target_id = self._pick_task_id("Цель связи", target_options)
+        if target_id is None:
+            return
+
+        created = task_service.create_task_link(self.db_path, source_id, target_id)
+        if not created:
+            QMessageBox.warning(
+                self,
+                "Связь не создана",
+                "Проверьте, что связь не дублируется и не образует цикл.",
+            )
+            return
+        self.refresh_graph()
+
+    def remove_link(self) -> None:
+        if not self._graph_links:
+            QMessageBox.information(self, "Нет связей", "Удалять пока нечего")
+            return
+
+        link_labels = [f"{source} -> {target}" for source, target in sorted(self._graph_links)]
+        selected, ok = QInputDialog.getItem(self, "Удалить связь", "Выберите связь", link_labels, 0, False)
+        if not ok:
+            return
+
+        index = link_labels.index(selected)
+        source_id, target_id = sorted(self._graph_links)[index]
+        task_service.delete_task_link(self.db_path, source_id, target_id)
+        self.refresh_graph()
 
 
 class TaskDetailDialog(QDialog):
@@ -228,6 +413,10 @@ class TaskQtWindow(QMainWindow):
         convert_btn.clicked.connect(self.convert_task_to_subtask)
         actions.addWidget(convert_btn)
 
+        graph_btn = QPushButton("Граф задач", self)
+        graph_btn.clicked.connect(self.open_graph_mode)
+        actions.addWidget(graph_btn)
+
         refresh_btn = QPushButton("Обновить", self)
         refresh_btn.clicked.connect(self.refresh_tasks)
         actions.addWidget(refresh_btn)
@@ -339,6 +528,11 @@ class TaskQtWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Не удалось преобразовать задачу")
             return
 
+        self.refresh_tasks()
+
+    def open_graph_mode(self) -> None:
+        dialog = TaskGraphDialog(self.db_path, self)
+        dialog.exec()
         self.refresh_tasks()
 
 
