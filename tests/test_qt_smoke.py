@@ -41,7 +41,7 @@ def test_convert_task_to_subtask_refreshes_list(app_instance, tmp_path, monkeypa
     window.refresh_tasks()
 
     child_row = next(index for index, task in enumerate(window._tasks_cache) if task.id == child.id)
-    window.tasks_list.setCurrentRow(child_row)
+    window.tasks_list.setCurrentItem(window.tasks_list.topLevelItem(child_row))
 
     monkeypatch.setattr(
         "app.main_qt.QInputDialog.getItem",
@@ -52,6 +52,6 @@ def test_convert_task_to_subtask_refreshes_list(app_instance, tmp_path, monkeypa
 
     titles = [task.title for task in window._tasks_cache]
     assert titles == ["Родитель"]
-    assert "подзадачи: 0/1" in window.tasks_list.item(0).text()
+    assert window.tasks_list.topLevelItem(0).text(1) == "0/1"
 
     window.close()
