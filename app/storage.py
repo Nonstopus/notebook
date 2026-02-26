@@ -529,6 +529,14 @@ def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
     return [(row["from_task_id"], row["to_task_id"]) for row in rows]
 
 
+def list_task_links_with_type(db_path: Path) -> List[Tuple[int, int, str]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT from_task_id, to_task_id, type FROM task_links ORDER BY from_task_id, to_task_id"
+        ).fetchall()
+    return [(row["from_task_id"], row["to_task_id"], row["type"]) for row in rows]
+
+
 def create_task_link(
     db_path: Path,
     source_task_id: int,

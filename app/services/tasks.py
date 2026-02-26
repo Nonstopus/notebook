@@ -174,6 +174,10 @@ def list_task_links(db_path: Path, task_id: Optional[int] = None) -> List[Tuple[
     return [pair for pair in links if task_id in pair]
 
 
+def list_task_links_with_type(db_path: Path) -> List[Tuple[int, int, str]]:
+    return storage.list_task_links_with_type(db_path)
+
+
 def delete_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
     return storage.delete_task_link(db_path, source_task_id, target_task_id)
 
