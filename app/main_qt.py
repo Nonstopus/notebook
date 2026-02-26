@@ -115,23 +115,23 @@ class TaskCardDelegate(QStyledItemDelegate):
         self._density = density
 
     def sizeHint(self, option, index):
-        base_height = 76 if self._density == "compact" else 96
+        base_height = 84 if self._density == "compact" else 110
         return QSize(option.rect.width(), base_height)
 
     def _meta_section_rects(self, content_rect: QRectF) -> list[QRectF]:
-        column_gap = 14.0
+        column_gap = 0.0
         narrow_breakpoint = 320.0
 
         if content_rect.width() <= narrow_breakpoint:
-            first_row_height = 14.0
-            second_row_top = content_rect.top() + 18.0
-            first_row_width = max(0.0, content_rect.width() - column_gap)
+            first_row_height = 28.0
+            second_row_top = content_rect.top() + 32.0
+            first_row_width = max(0.0, content_rect.width() - 12.0)
             first_col_width = first_row_width / 2
             second_col_width = first_row_width - first_col_width
             return [
                 QRectF(content_rect.left(), content_rect.top(), first_col_width, first_row_height),
-                QRectF(content_rect.left() + first_col_width + column_gap, content_rect.top(), second_col_width, first_row_height),
-                QRectF(content_rect.left(), second_row_top, content_rect.width(), first_row_height),
+                QRectF(content_rect.left() + first_col_width + 12.0, content_rect.top(), second_col_width, first_row_height),
+                QRectF(content_rect.left(), second_row_top, content_rect.width(), 28.0),
             ]
 
         stretches = [2, 1, 1]
@@ -216,62 +216,69 @@ class TaskCardDelegate(QStyledItemDelegate):
             {
                 "label": "Срок",
                 "value": str(index.data(ROLE_DEADLINE) or "—"),
-                "display": str(index.data(ROLE_DEADLINE) or "—"),
                 "color": QColor(index.data(ROLE_DEADLINE_COLOR) or text_color.name()),
                 "allow_elide": True,
             },
             {
                 "label": "Подзадачи",
                 "value": str(index.data(ROLE_SUBTASKS) or 0),
-                "display": f"Подзадачи: {int(index.data(ROLE_SUBTASKS) or 0)}",
                 "color": text_color,
                 "allow_elide": False,
             },
             {
                 "label": "Приоритет",
                 "value": str(index.data(ROLE_PRIORITY) or "Обычный"),
-                "display": str(index.data(ROLE_PRIORITY) or "Обычный"),
                 "color": text_color,
                 "allow_elide": True,
             },
         ]
-        meta_row_rect = QRectF(left + 16, top + 52, card_rect.width() - 32, 30)
+        meta_row_rect = QRectF(left + 16, top + 50, card_rect.width() - 32, 44)
         section_rects = self._meta_section_rects(meta_row_rect)
-        cell_padding_x = 6.0
-        label_height = 12.0
-        value_height = 16.0
+        cell_padding_x = 8.0
+        label_height = 13.0
+        value_height = 18.0
+        cell_inner_gap = 3.0
         label_font = painter.font()
-        label_font.setPointSizeF(max(8.0, label_font.pointSizeF() - 0.5))
+        label_font.setPointSizeF(max(8.0, label_font.pointSizeF() - 1.0))
+        label_font.setBold(False)
         value_font = painter.font()
-        value_font.setBold(False)
+        value_font.setPointSizeF(max(9.0, value_font.pointSizeF()))
+        value_font.setBold(True)
+        separator_color = QColor(TOKENS["colors"]["border"])
 
         for section_index, section in enumerate(sections):
             cell_rect = section_rects[section_index]
-            label_text = section["label"] if section["label"] != "Подзадачи" else ""
-            label_rect = QRectF(cell_rect.left() + cell_padding_x, cell_rect.top(), max(0.0, cell_rect.width() - 2 * cell_padding_x), label_height)
+            available_width = max(0.0, cell_rect.width() - 2 * cell_padding_x)
+            label_rect = QRectF(cell_rect.left() + cell_padding_x, cell_rect.top(), available_width, label_height)
             value_rect = QRectF(
                 cell_rect.left() + cell_padding_x,
-                cell_rect.top() + (label_height + 2 if label_text else 0),
-                max(0.0, cell_rect.width() - 2 * cell_padding_x),
+                cell_rect.top() + label_height + cell_inner_gap,
+                available_width,
                 value_height,
             )
 
-            if label_text:
-                painter.setFont(label_font)
-                painter.setPen(meta_color)
-                painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label_text)
+            painter.setFont(label_font)
+            painter.setPen(meta_color)
+            painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, section["label"])
 
             painter.setFont(value_font)
             painter.setPen(section["color"])
             if section["allow_elide"]:
                 elided_value = painter.fontMetrics().elidedText(
-                    section["display"],
+                    section["value"],
                     Qt.TextElideMode.ElideRight,
                     max(0, int(value_rect.width())),
                 )
             else:
-                elided_value = section["display"]
+                elided_value = section["value"]
             painter.drawText(value_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_value)
+
+            if section_index < len(sections) - 1 and meta_row_rect.width() > 320:
+                painter.setPen(QPen(separator_color, 1))
+                painter.drawLine(
+                    QPointF(cell_rect.right(), cell_rect.top() + 2),
+                    QPointF(cell_rect.right(), cell_rect.bottom() - 2),
+                )
 
         badge_x = card_rect.right() - 12
         for text, color in reversed(index.data(ROLE_BADGES) or []):
