@@ -1395,8 +1395,14 @@ class TaskQtWindow(QMainWindow):
             deadline = "—"
             deadline_color = TOKENS["colors"]["text_primary"]
             if due_value:
-                if not task.is_done and due_value < now:
-                    overdue_days = max(1, (now - due_value).days + 1)
+                task_is_overdue = task_service.is_overdue(
+                    due_datetime=task.due_datetime,
+                    deadline_enabled=task.due_datetime is not None,
+                    is_done=task.is_done,
+                    now=now,
+                )
+                if task_is_overdue:
+                    overdue_days = max(1, (now - task.due_datetime).days + 1)
                     deadline = f"Просрочено {overdue_days}д"
                     deadline_color = TOKENS["colors"]["danger"]
                 else:
@@ -1442,12 +1448,24 @@ class TaskQtWindow(QMainWindow):
                 child.setData(0, ROLE_META, f"Подзадача #{subtask.id}")
                 child.setData(0, ROLE_PROGRESS, 100 if subtask.is_done else 0)
                 child_deadline = subtask.due_datetime or subtask.reminder_datetime
-                child.setData(0, ROLE_DEADLINE, child_deadline.strftime("%d.%m %H:%M") if child_deadline else "—")
+                child_deadline_label = child_deadline.strftime("%d.%m %H:%M") if child_deadline else "—"
+                child_deadline_color = TOKENS["colors"]["text_primary"]
+                child_is_overdue = task_service.is_overdue(
+                    due_datetime=subtask.due_datetime,
+                    deadline_enabled=subtask.due_datetime is not None,
+                    is_done=subtask.is_done,
+                    now=now,
+                )
+                if child_is_overdue:
+                    overdue_days = max(1, (now - subtask.due_datetime).days + 1)
+                    child_deadline_label = f"Просрочено {overdue_days}д"
+                    child_deadline_color = TOKENS["colors"]["danger"]
+                child.setData(0, ROLE_DEADLINE, child_deadline_label)
                 child.setData(0, ROLE_SUBTASKS, 0)
                 child.setData(0, ROLE_DONE, subtask.is_done)
                 child_priority_label = _priority_to_label(subtask.priority)
                 child.setData(0, ROLE_PRIORITY, child_priority_label)
-                child.setData(0, ROLE_DEADLINE_COLOR, TOKENS["colors"]["text_primary"])
+                child.setData(0, ROLE_DEADLINE_COLOR, child_deadline_color)
                 child.setToolTip(
                     0,
                     "\n".join(

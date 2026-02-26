@@ -73,6 +73,21 @@ def list_tasks(
     )
 
 
+def is_overdue(
+    *,
+    due_datetime: Optional[datetime],
+    deadline_enabled: bool,
+    is_done: bool = False,
+    now: Optional[datetime] = None,
+) -> bool:
+    if not deadline_enabled or due_datetime is None:
+        return False
+    if is_done:
+        return False
+    current = now or datetime.now()
+    return due_datetime < current
+
+
 def get_task(db_path: Path, task_id: int) -> Optional[Task]:
     return storage.get_task(db_path, task_id)
 

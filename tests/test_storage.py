@@ -224,6 +224,7 @@ def test_list_tasks_overdue_filter(tmp_path):
 
     overdue_task = storage.create_task(db_path, "Просрочено", due_datetime=now - timedelta(hours=1))
     storage.create_task(db_path, "В будущем", due_datetime=now + timedelta(hours=1))
+    storage.create_task(db_path, "Без дедлайна", reminder_datetime=now - timedelta(days=1))
     done_overdue = storage.create_task(db_path, "Сделано просроченное", due_datetime=now - timedelta(hours=2))
     storage.update_task(db_path, done_overdue.id, is_done=True)
 
