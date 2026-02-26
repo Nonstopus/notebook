@@ -12,6 +12,10 @@ DB_NAME = "data.db"
 _UNSET = object()
 
 
+class ConvertToSubtaskError(ValueError):
+    """Domain validation error for converting a task to subtask."""
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -244,19 +248,21 @@ def delete_task(db_path: Path, task_id: int) -> bool:
 
 def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: int) -> Optional[Subtask]:
     if child_task_id == parent_task_id:
-        raise ValueError("Нельзя сделать задачу подзадачей самой себя")
+        raise ConvertToSubtaskError("Нельзя сделать задачу подзадачей самой себя")
 
     with get_conn(db_path) as conn:
         child_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (child_task_id,)).fetchone()
         parent_exists = conn.execute("SELECT id FROM tasks WHERE id = ?", (parent_task_id,)).fetchone()
-        if not child_row or not parent_exists:
-            return None
+        if not child_row:
+            raise ConvertToSubtaskError(f"Задача #{child_task_id} не найдена")
+        if not parent_exists:
+            raise ConvertToSubtaskError(f"Родительская задача #{parent_task_id} не найдена")
 
         child_subtasks_count = conn.execute(
             "SELECT COUNT(*) FROM subtasks WHERE task_id = ?", (child_task_id,)
         ).fetchone()[0]
         if child_subtasks_count > 0:
-            raise ValueError(
+            raise ConvertToSubtaskError(
                 "Нельзя конвертировать задачу с подзадачами: сначала перенесите или удалите её подзадачи"
             )
 
@@ -269,7 +275,7 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
             (child_task_id, child_task_id),
         ).fetchone()[0]
         if linked_count > 0:
-            raise ValueError(
+            raise ConvertToSubtaskError(
                 "Нельзя конвертировать задачу, участвующую в связях графа: сначала удалите связи"
             )
 

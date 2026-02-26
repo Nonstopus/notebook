@@ -9,6 +9,7 @@ from app.models import Subtask, Task
 
 
 UNSET_DUE_DATETIME = object()
+ConvertToSubtaskError = storage.ConvertToSubtaskError
 
 
 def init_db(db_path: Path) -> None:

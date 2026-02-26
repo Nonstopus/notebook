@@ -187,9 +187,13 @@ def test_convert_task_to_subtask_with_deleted_parent(tmp_path):
     child = storage.create_task(db_path, "Дочерняя")
     storage.delete_task(db_path, parent.id)
 
-    converted = storage.convert_task_to_subtask(db_path, child.id, parent.id)
+    try:
+        storage.convert_task_to_subtask(db_path, child.id, parent.id)
+    except storage.ConvertToSubtaskError as exc:
+        assert f"Родительская задача #{parent.id} не найдена" in str(exc)
+    else:
+        raise AssertionError("Expected ConvertToSubtaskError for missing parent")
 
-    assert converted is None
     assert storage.get_task(db_path, child.id) is not None
 
 

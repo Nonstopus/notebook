@@ -62,3 +62,9 @@ def test_cli_convert_to_subtask_same_task(tmp_path):
     run_cli(tmp_path, "add", "Одиночная")
     result = run_cli(tmp_path, "convert-to-subtask", "1", "1")
     assert "Нельзя сделать задачу подзадачей самой себя" in result.stdout
+
+
+def test_cli_convert_to_subtask_parent_not_found(tmp_path):
+    run_cli(tmp_path, "add", "Обычная")
+    result = run_cli(tmp_path, "convert-to-subtask", "1", "999")
+    assert "Родительская задача #999 не найдена" in result.stdout
