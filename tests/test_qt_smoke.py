@@ -6,7 +6,10 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
+try:
+    from PySide6.QtWidgets import QApplication
+except ImportError as exc:  # pragma: no cover - environment guard
+    pytest.skip(f"PySide6 runtime unavailable: {exc}", allow_module_level=True)
 
 from app.main_qt import TaskQtWindow
 from app.services import tasks
@@ -52,6 +55,36 @@ def test_convert_task_to_subtask_refreshes_list(app_instance, tmp_path, monkeypa
 
     titles = [task.title for task in window._tasks_cache]
     assert titles == ["Родитель"]
-    assert window.tasks_list.topLevelItem(0).text(1) == "0/1"
+    assert window.tasks_list.topLevelItem(0).text(1) == "0/1 · подзадач: 1"
+
+    window.close()
+
+
+def test_qt_filters_by_status_and_subtasks(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt.db")
+    window = TaskQtWindow(db_path)
+
+    with_subtasks = tasks.create_task(db_path, "С подзадачами")
+    done_task = tasks.create_task(db_path, "Завершённая")
+    tasks.create_subtask(db_path, with_subtasks.id, "Подшаг")
+    tasks.update_task(db_path, done_task.id, is_done=True)
+
+    window.status_filter.setCurrentText("Выполненные")
+    window.subtasks_filter.setCurrentText("Без подзадач")
+    window.refresh_tasks()
+
+    visible_titles = [task.title for task in window._tasks_cache]
+    assert visible_titles == ["Завершённая"]
+
+    window.subtasks_filter.setCurrentText("Есть подзадачи")
+    window.status_filter.setCurrentText("Все")
+    window.sort_mode.setCurrentText("Подзадачи (по убыванию)")
+    window.refresh_tasks()
+
+    visible_titles = [task.title for task in window._tasks_cache]
+    assert visible_titles == ["С подзадачами"]
+
+    row_title = window.tasks_list.topLevelItem(0).text(0)
+    assert "🧩" in row_title
 
     window.close()
