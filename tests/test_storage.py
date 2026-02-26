@@ -155,6 +155,20 @@ def test_convert_task_to_subtask(tmp_path):
     assert all(task.id != child.id for task in storage.list_tasks(db_path))
 
 
+def test_convert_task_to_subtask_keeps_done_status(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent = storage.create_task(db_path, "Родитель")
+    child = storage.create_task(db_path, "Дочерняя")
+    storage.update_task(db_path, child.id, is_done=True)
+
+    converted = storage.convert_task_to_subtask(db_path, child.id, parent.id)
+
+    assert converted is not None
+    subtasks = storage.list_subtasks(db_path, parent.id)
+    assert len(subtasks) == 1
+    assert subtasks[0].is_done is True
+
+
 def test_convert_task_to_subtask_requires_different_tasks(tmp_path):
     db_path = temp_db(tmp_path)
     task = storage.create_task(db_path, "Одна задача")

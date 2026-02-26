@@ -9,6 +9,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication
 
 from app.main_qt import TaskQtWindow
+from app.services import tasks
 
 
 @pytest.fixture
@@ -27,5 +28,30 @@ def test_qt_window_starts(app_instance, tmp_path):
     assert window.windowTitle() == "Task Tracker Desktop (Qt)"
     assert window.tasks_list is not None
     assert window.isVisible()
+
+    window.close()
+
+
+def test_convert_task_to_subtask_refreshes_list(app_instance, tmp_path, monkeypatch):
+    db_path = Path(tmp_path / "qt.db")
+    window = TaskQtWindow(db_path)
+
+    parent = tasks.create_task(db_path, "Родитель")
+    child = tasks.create_task(db_path, "Дочерняя")
+    window.refresh_tasks()
+
+    child_row = next(index for index, task in enumerate(window._tasks_cache) if task.id == child.id)
+    window.tasks_list.setCurrentRow(child_row)
+
+    monkeypatch.setattr(
+        "app.main_qt.QInputDialog.getItem",
+        lambda *args, **kwargs: (f"#{parent.id} {parent.title}", True),
+    )
+
+    window.convert_task_to_subtask()
+
+    titles = [task.title for task in window._tasks_cache]
+    assert titles == ["Родитель"]
+    assert "подзадачи: 0/1" in window.tasks_list.item(0).text()
 
     window.close()
