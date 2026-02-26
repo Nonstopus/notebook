@@ -23,6 +23,27 @@ def app_instance():
     return app
 
 
+def test_main_qt_import_has_no_tkinter_dependency(monkeypatch):
+    import importlib
+    import sys
+
+    sys.modules.pop("app.main_qt", None)
+    sys.modules.pop("tkinter", None)
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "tkinter" or name.startswith("tkinter."):
+            raise AssertionError("Tkinter import is forbidden for Qt entrypoint")
+        return original_import(name, *args, **kwargs)
+
+    original_import = __import__
+    monkeypatch.setattr("builtins.__import__", _blocked_import)
+
+    module = importlib.import_module("app.main_qt")
+
+    assert module is not None
+    assert "tkinter" not in sys.modules
+
+
 def test_qt_window_starts(app_instance, tmp_path):
     window = TaskQtWindow(Path(tmp_path / "qt.db"))
     window.show()
