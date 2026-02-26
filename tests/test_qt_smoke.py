@@ -239,54 +239,86 @@ def test_main_window_restores_active_tab(app_instance, tmp_path):
     second.close()
 
 
-def test_graph_dialog_renders_hierarchy_and_dependency_edges(app_instance, tmp_path):
+def test_graph_dialog_renders_only_task_dependencies(app_instance, tmp_path):
     db_path = Path(tmp_path / "qt_graph.db")
-    parent = tasks.create_task(db_path, "Родитель")
-    dependent = tasks.create_task(db_path, "Зависимая")
-    tasks.create_subtask(db_path, parent.id, "Подзадача")
-    tasks.create_task_link(db_path, parent.id, dependent.id)
+    first = tasks.create_task(db_path, "Первая")
+    second = tasks.create_task(db_path, "Вторая")
+    tasks.create_subtask(db_path, first.id, "Подзадача")
+    tasks.create_task_link(db_path, first.id, second.id)
 
     dialog = TaskGraphDialog(db_path)
     dialog.refresh_graph(force=True)
 
     edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
-    assert any(edge.relation_type == "hierarchy" for edge in edges)
-    assert any(edge.relation_type == "dependency" for edge in edges)
-
-    dialog.relation_filter.setCurrentText(TaskGraphDialog.RELATION_HIERARCHY)
-    dialog.refresh_graph(force=True)
-    edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
-    assert edges
-    assert all(edge.relation_type == "hierarchy" for edge in edges)
-
-    dialog.relation_filter.setCurrentText(TaskGraphDialog.RELATION_DEPENDENCY)
-    dialog.refresh_graph(force=True)
-    edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
+    assert len(dialog._node_items) == 2
     assert edges
     assert all(edge.relation_type == "dependency" for edge in edges)
 
     dialog.close()
 
 
-def test_graph_dialog_updates_after_subtask_deletion(app_instance, tmp_path):
-    db_path = Path(tmp_path / "qt_graph.db")
-    task = tasks.create_task(db_path, "Родитель")
-    subtask = tasks.create_subtask(db_path, task.id, "Подзадача")
+def test_graph_dialog_cycle_warning_and_toggle(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt_graph_cycle.db")
+    first = tasks.create_task(db_path, "A")
+    second = tasks.create_task(db_path, "B")
+    tasks.create_task_link(db_path, first.id, second.id)
+    tasks.create_task_link(db_path, second.id, first.id, prevent_cycles=False)
 
     dialog = TaskGraphDialog(db_path)
     dialog.refresh_graph(force=True)
-    assert any(node_id == f"subtask:{subtask.id}" for node_id in dialog._node_items)
 
-    tasks.delete_subtask(db_path, subtask.id)
-    dialog.refresh_graph(force=True)
-
-    assert all(not node_id.startswith("subtask:") for node_id in dialog._node_items)
+    assert "Найдены циклы" in dialog.warning_label.text()
     edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
-    assert all(edge.relation_type != "hierarchy" for edge in edges)
+    assert any(edge.relation_type == "cyclic_dependency" for edge in edges)
+
+    dialog.cycle_mode.setChecked(False)
+    dialog.refresh_graph(force=True)
+    edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
+    assert all(edge.relation_type != "cyclic_dependency" for edge in edges)
 
     dialog.close()
 
 
+
+
+def test_graph_dialog_layout_is_stable(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt_graph_layout.db")
+    a = tasks.create_task(db_path, "A")
+    b = tasks.create_task(db_path, "B")
+    c = tasks.create_task(db_path, "C")
+    tasks.create_task_link(db_path, a.id, b.id)
+    tasks.create_task_link(db_path, b.id, c.id)
+
+    dialog = TaskGraphDialog(db_path)
+    dialog.refresh_graph(force=True)
+    first_positions = {
+        node_id: (item.scenePos().x(), item.scenePos().y())
+        for node_id, item in dialog._node_items.items()
+    }
+
+    dialog.refresh_graph(force=True)
+    second_positions = {
+        node_id: (item.scenePos().x(), item.scenePos().y())
+        for node_id, item in dialog._node_items.items()
+    }
+
+    assert first_positions == second_positions
+    dialog.close()
+
+
+def test_graph_dialog_uses_rectangular_nodes(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt_graph_nodes.db")
+    task = tasks.create_task(db_path, "Карточка")
+    tasks.create_subtask(db_path, task.id, "sub")
+
+    dialog = TaskGraphDialog(db_path)
+    dialog.refresh_graph(force=True)
+
+    assert len(dialog._node_items) == 1
+    node = next(iter(dialog._node_items.values()))
+    assert node.rect().width() > node.rect().height()
+
+    dialog.close()
 def test_note_toolbar_scoped_to_note_editor(app_instance, tmp_path):
     db_path = Path(tmp_path / "qt.db")
     created = tasks.create_task(db_path, "Фокус")
