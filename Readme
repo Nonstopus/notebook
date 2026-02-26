@@ -13,11 +13,12 @@
 
 ## Требования
 - Python 3.10+
-- Внешние зависимости не требуются (используется стандартная библиотека и Tkinter).
+- Зависимости из `requirements.txt` (включая `PySide6` для нового Qt-интерфейса).
 
 ## Запуск (GUI)
 ```bash
-python -m app.main
+python -m app.main      # Tkinter (legacy)
+python -m app.main_qt   # PySide6 (новый UI)
 ```
 
 ## Запуск (CLI)
