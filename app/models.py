@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 
@@ -25,6 +26,22 @@ class Subtask:
     is_done: bool
     created_at: datetime
     updated_at: datetime
+    reminder_datetime: Optional[datetime]
+    due_datetime: Optional[datetime]
+    note: Optional[str]
+
+
+class ItemKind(str, Enum):
+    TASK = "task"
+    SUBTASK = "subtask"
+
+
+@dataclass(frozen=True)
+class TreeItemRef:
+    kind: ItemKind
+    id: int
+    level: int
+    parent_task_id: Optional[int] = None
 
 
 @dataclass

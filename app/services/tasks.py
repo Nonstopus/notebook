@@ -92,6 +92,10 @@ def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]
 def list_subtasks(db_path: Path, task_id: int) -> List[Subtask]:
     return storage.list_subtasks(db_path, task_id)
 
+def get_subtask(db_path: Path, subtask_id: int) -> Optional[Subtask]:
+    return storage.get_subtask(db_path, subtask_id)
+
+
 
 def update_subtask(
     db_path: Path,
@@ -99,8 +103,19 @@ def update_subtask(
     *,
     title: Optional[str] = None,
     is_done: Optional[bool] = None,
+    reminder_datetime: Optional[Optional[datetime]] = None,
+    due_datetime: Optional[Optional[datetime]] | object = UNSET_DUE_DATETIME,
+    note: Optional[Optional[str]] = None,
 ) -> Optional[Subtask]:
-    return storage.update_subtask(db_path, subtask_id, title=title, is_done=is_done)
+    kwargs = {
+        "title": title,
+        "is_done": is_done,
+        "reminder_datetime": reminder_datetime,
+        "note": note,
+    }
+    if due_datetime is not UNSET_DUE_DATETIME:
+        kwargs["due_datetime"] = due_datetime
+    return storage.update_subtask(db_path, subtask_id, **kwargs)
 
 
 def delete_subtask(db_path: Path, subtask_id: int) -> bool:

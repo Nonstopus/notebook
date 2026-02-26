@@ -62,10 +62,20 @@ def init_db(db_path: Path) -> None:
                 is_done INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                reminder_datetime TEXT,
+                due_datetime TEXT,
+                note TEXT,
                 FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
             """
         )
+        subtask_columns = {row["name"] for row in conn.execute("PRAGMA table_info(subtasks)").fetchall()}
+        if "reminder_datetime" not in subtask_columns:
+            conn.execute("ALTER TABLE subtasks ADD COLUMN reminder_datetime TEXT")
+        if "due_datetime" not in subtask_columns:
+            conn.execute("ALTER TABLE subtasks ADD COLUMN due_datetime TEXT")
+        if "note" not in subtask_columns:
+            conn.execute("ALTER TABLE subtasks ADD COLUMN note TEXT")
 
         conn.execute(
             """
@@ -116,6 +126,9 @@ def _row_to_subtask(row: sqlite3.Row) -> Subtask:
         is_done=bool(row["is_done"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+        reminder_datetime=datetime.fromisoformat(row["reminder_datetime"]) if row["reminder_datetime"] else None,
+        due_datetime=datetime.fromisoformat(row["due_datetime"]) if row["due_datetime"] else None,
+        note=row["note"],
     )
 
 
@@ -285,10 +298,21 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
         now = _now()
         cursor = conn.execute(
             """
-            INSERT INTO subtasks (task_id, title, is_done, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO subtasks (
+                task_id, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (parent_task_id, child_row["title"], child_row["is_done"], now, now),
+            (
+                parent_task_id,
+                child_row["title"],
+                child_row["is_done"],
+                now,
+                now,
+                child_row["reminder_datetime"],
+                child_row["due_datetime"],
+                child_row["note"],
+            ),
         )
         subtask_row = conn.execute(
             "SELECT * FROM subtasks WHERE id = ?", (cursor.lastrowid,)
@@ -308,8 +332,10 @@ def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT INTO subtasks (task_id, title, is_done, created_at, updated_at)
-            VALUES (?, ?, 0, ?, ?)
+            INSERT INTO subtasks (
+                task_id, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note
+            )
+            VALUES (?, ?, 0, ?, ?, NULL, NULL, NULL)
             """,
             (task_id, title, created_at, created_at),
         )
@@ -326,12 +352,21 @@ def list_subtasks(db_path: Path, task_id: int) -> List[Subtask]:
     return [_row_to_subtask(row) for row in rows]
 
 
+def get_subtask(db_path: Path, subtask_id: int) -> Optional[Subtask]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
+    return _row_to_subtask(row) if row else None
+
+
 def update_subtask(
     db_path: Path,
     subtask_id: int,
     *,
     title: Optional[str] = None,
     is_done: Optional[bool] = None,
+    reminder_datetime: Optional[Optional[datetime]] = None,
+    due_datetime: Optional[Optional[datetime]] | object = _UNSET,
+    note: Optional[Optional[str]] = None,
 ) -> Optional[Subtask]:
     with get_conn(db_path) as conn:
         row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
@@ -345,6 +380,15 @@ def update_subtask(
         if is_done is not None:
             updates.append("is_done = ?")
             values.append(1 if is_done else 0)
+        if reminder_datetime is not None:
+            updates.append("reminder_datetime = ?")
+            values.append(reminder_datetime.isoformat() if reminder_datetime else None)
+        if due_datetime is not _UNSET:
+            updates.append("due_datetime = ?")
+            values.append(due_datetime.isoformat() if due_datetime else None)
+        if note is not None:
+            updates.append("note = ?")
+            values.append(note)
         if not updates:
             return _row_to_subtask(row)
         updates.append("updated_at = ?")
