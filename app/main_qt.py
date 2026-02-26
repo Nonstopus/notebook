@@ -921,6 +921,10 @@ class TaskQtWindow(QMainWindow):
         self.delete_btn.clicked.connect(self.delete_task)
         left_actions.addWidget(self.delete_btn)
 
+        self.move_subtask_btn = QPushButton("Переместить в задачу…", self)
+        self.move_subtask_btn.clicked.connect(self.move_selected_subtask)
+        left_actions.addWidget(self.move_subtask_btn)
+
         convert_btn = QPushButton("Сделать подзадачей…", self)
         convert_btn.clicked.connect(self.convert_task_to_subtask)
         left_actions.addWidget(convert_btn)
@@ -1676,6 +1680,42 @@ class TaskQtWindow(QMainWindow):
             error_message="Не удалось удалить задачу. Попробуйте снова.",
         )
 
+    def move_selected_subtask(self) -> None:
+        item_ref = self._selected_item_ref()
+        if item_ref is None or item_ref.kind != ItemKind.SUBTASK:
+            QMessageBox.information(
+                self,
+                "Выберите подзадачу",
+                "Выберите подзадачу, которую нужно переместить",
+            )
+            return
+
+        subtask = task_service.get_subtask(self.db_path, item_ref.id)
+        if subtask is None:
+            QMessageBox.warning(self, "Ошибка", "Подзадача не найдена")
+            self.refresh_tasks()
+            return
+
+        task_options = [task for task in task_service.list_tasks(self.db_path) if task.id != subtask.task_id]
+        if not task_options:
+            QMessageBox.information(self, "Недостаточно задач", "Нужна хотя бы ещё одна задача для переноса")
+            return
+
+        dialog = TaskPickerDialog(task_options, self)
+        dialog.setWindowTitle("Переместить в задачу…")
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.selected_task_id is None:
+            return
+
+        self._run_ui_flow(
+            busy_widget=self.move_subtask_btn,
+            operation=lambda: task_service.move_subtask(self.db_path, subtask.id, dialog.selected_task_id),
+            on_success=lambda moved: (
+                self.refresh_tasks(),
+                self._focus_subtask_in_tree(moved.task_id, moved.id),
+            ),
+            error_message="Не удалось переместить подзадачу. Проверьте выбранную задачу и дедлайн.",
+        )
+
     def convert_task_to_subtask(self) -> None:
         if self._selected_subtask_id() is not None:
             QMessageBox.information(
@@ -1738,9 +1778,16 @@ class TaskQtWindow(QMainWindow):
         create_task_action = menu.addAction("Новая задача")
         create_subtask_action = menu.addAction("Новая подзадача")
         mark_done_action = menu.addAction("Переключить выполнение")
+        move_subtask_action = menu.addAction("Переместить в задачу…")
         delete_action = menu.addAction("Удалить")
         menu.addSeparator()
         convert_action = menu.addAction("Сделать подзадачей…")
+
+        item_ref = self._selected_item_ref()
+        is_subtask = item_ref is not None and item_ref.kind == ItemKind.SUBTASK
+        move_subtask_action.setEnabled(is_subtask)
+        convert_action.setEnabled(not is_subtask)
+
         chosen = menu.exec(self.tasks_list.viewport().mapToGlobal(pos))
         if chosen == create_task_action:
             self.add_task()
@@ -1748,6 +1795,8 @@ class TaskQtWindow(QMainWindow):
             self.add_subtask()
         if chosen == mark_done_action:
             self.toggle_selected_done()
+        if chosen == move_subtask_action:
+            self.move_selected_subtask()
         if chosen == delete_action:
             self.delete_task()
         if chosen == convert_action:
