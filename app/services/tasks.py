@@ -112,7 +112,38 @@ def subtask_progress(db_path: Path, task_id: int) -> Tuple[int, int]:
 
 
 def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: int) -> Optional[Subtask]:
-    return storage.convert_task_to_subtask(db_path, child_task_id, parent_task_id)
+    if child_task_id == parent_task_id:
+        raise ConvertToSubtaskError("Нельзя сделать задачу подзадачей самой себя")
+
+    child = storage.get_task(db_path, child_task_id)
+    if not child:
+        raise ConvertToSubtaskError(f"Задача #{child_task_id} не найдена")
+
+    parent = storage.get_task(db_path, parent_task_id)
+    if not parent:
+        raise ConvertToSubtaskError(f"Родительская задача #{parent_task_id} не найдена")
+
+    if storage.list_subtasks(db_path, child_task_id):
+        raise ConvertToSubtaskError(
+            "Нельзя конвертировать задачу с подзадачами: сначала перенесите или удалите её подзадачи"
+        )
+
+    links = storage.list_task_links(db_path)
+    if any(child_task_id in link for link in links):
+        raise ConvertToSubtaskError(
+            "Нельзя конвертировать задачу, участвующую в связях графа: сначала удалите связи"
+        )
+
+    converted = storage.create_subtask(db_path, parent_task_id, child.title)
+    if not converted:
+        return None
+
+    if child.is_done:
+        converted = storage.update_subtask(db_path, converted.id, is_done=True)
+    if not storage.delete_task(db_path, child_task_id):
+        storage.delete_subtask(db_path, converted.id)
+        return None
+    return converted
 
 
 def create_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
