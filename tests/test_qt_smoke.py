@@ -11,7 +11,15 @@ try:
 except ImportError as exc:  # pragma: no cover - environment guard
     pytest.skip(f"PySide6 runtime unavailable: {exc}", allow_module_level=True)
 
-from app.main_qt import ROLE_BADGES, ROLE_PROGRESS, ROLE_SUBTASKS, SELECTED_TEXT_CONTRAST, TaskQtWindow
+from app.main_qt import (
+    ROLE_BADGES,
+    ROLE_PROGRESS,
+    ROLE_SUBTASKS,
+    SELECTED_TEXT_CONTRAST,
+    GraphEdgeItem,
+    TaskGraphDialog,
+    TaskQtWindow,
+)
 from app.services import tasks
 
 
@@ -165,3 +173,51 @@ def test_main_window_restores_active_tab(app_instance, tmp_path):
     second = MainWindow(db_path)
     assert second.tabs.currentIndex() == 1
     second.close()
+
+
+def test_graph_dialog_renders_hierarchy_and_dependency_edges(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt_graph.db")
+    parent = tasks.create_task(db_path, "Родитель")
+    dependent = tasks.create_task(db_path, "Зависимая")
+    tasks.create_subtask(db_path, parent.id, "Подзадача")
+    tasks.create_task_link(db_path, parent.id, dependent.id)
+
+    dialog = TaskGraphDialog(db_path)
+    dialog.refresh_graph(force=True)
+
+    edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
+    assert any(edge.relation_type == "hierarchy" for edge in edges)
+    assert any(edge.relation_type == "dependency" for edge in edges)
+
+    dialog.relation_filter.setCurrentText(TaskGraphDialog.RELATION_HIERARCHY)
+    dialog.refresh_graph(force=True)
+    edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
+    assert edges
+    assert all(edge.relation_type == "hierarchy" for edge in edges)
+
+    dialog.relation_filter.setCurrentText(TaskGraphDialog.RELATION_DEPENDENCY)
+    dialog.refresh_graph(force=True)
+    edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
+    assert edges
+    assert all(edge.relation_type == "dependency" for edge in edges)
+
+    dialog.close()
+
+
+def test_graph_dialog_updates_after_subtask_deletion(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt_graph.db")
+    task = tasks.create_task(db_path, "Родитель")
+    subtask = tasks.create_subtask(db_path, task.id, "Подзадача")
+
+    dialog = TaskGraphDialog(db_path)
+    dialog.refresh_graph(force=True)
+    assert any(node_id == f"subtask:{subtask.id}" for node_id in dialog._node_items)
+
+    tasks.delete_subtask(db_path, subtask.id)
+    dialog.refresh_graph(force=True)
+
+    assert all(not node_id.startswith("subtask:") for node_id in dialog._node_items)
+    edges = [item for item in dialog.scene.items() if isinstance(item, GraphEdgeItem)]
+    assert all(edge.relation_type != "hierarchy" for edge in edges)
+
+    dialog.close()
