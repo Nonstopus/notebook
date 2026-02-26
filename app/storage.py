@@ -197,7 +197,7 @@ def init_db(db_path: Path) -> None:
 
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS task_links (
+            CREATE TABLE IF NOT EXISTS task_dependencies (
                 from_task_id INTEGER NOT NULL,
                 to_task_id INTEGER NOT NULL,
                 type TEXT NOT NULL DEFAULT 'depends_on',
@@ -208,6 +208,26 @@ def init_db(db_path: Path) -> None:
                 FOREIGN KEY(to_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
                 CHECK (from_task_id != to_task_id)
             );
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_links (
+                from_task_id INTEGER NOT NULL,
+                to_task_id INTEGER NOT NULL,
+                type TEXT NOT NULL DEFAULT 'depends_on',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (from_task_id, to_task_id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type, created_at, updated_at)
+            SELECT from_task_id, to_task_id, type, created_at, updated_at
+            FROM task_links
             """
         )
 
@@ -580,7 +600,7 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
         linked_count = conn.execute(
             """
             SELECT COUNT(*)
-            FROM task_links
+            FROM task_dependencies
             WHERE from_task_id = ? OR to_task_id = ?
             """,
             (child_task_id, child_task_id),
@@ -867,7 +887,7 @@ def subtask_progress(db_path: Path, task_id: int) -> Tuple[int, int]:
 def _would_create_cycle(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
     graph: Dict[int, List[int]] = {}
     with get_conn(db_path) as conn:
-        rows = conn.execute("SELECT from_task_id, to_task_id FROM task_links").fetchall()
+        rows = conn.execute("SELECT from_task_id, to_task_id FROM task_dependencies").fetchall()
     for row in rows:
         graph.setdefault(row["from_task_id"], []).append(row["to_task_id"])
 
@@ -909,7 +929,7 @@ def _would_create_subtask_cycle(db_path: Path, source_subtask_id: int, target_su
 def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
     with get_conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT from_task_id, to_task_id FROM task_links ORDER BY from_task_id, to_task_id"
+            "SELECT from_task_id, to_task_id FROM task_dependencies ORDER BY from_task_id, to_task_id"
         ).fetchall()
     return [(row["from_task_id"], row["to_task_id"]) for row in rows]
 
@@ -917,7 +937,7 @@ def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
 def list_task_links_with_type(db_path: Path) -> List[Tuple[int, int, str]]:
     with get_conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT from_task_id, to_task_id, type FROM task_links ORDER BY from_task_id, to_task_id"
+            "SELECT from_task_id, to_task_id, type FROM task_dependencies ORDER BY from_task_id, to_task_id"
         ).fetchall()
     return [(row["from_task_id"], row["to_task_id"], row["type"]) for row in rows]
 
@@ -940,7 +960,7 @@ def create_task_link(
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT OR IGNORE INTO task_links (from_task_id, to_task_id, type, created_at, updated_at)
+            INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?)
             """,
             (source_task_id, target_task_id, "depends_on", now, now),
@@ -951,7 +971,7 @@ def create_task_link(
 def delete_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
     with get_conn(db_path) as conn:
         cursor = conn.execute(
-            "DELETE FROM task_links WHERE from_task_id = ? AND to_task_id = ?",
+            "DELETE FROM task_dependencies WHERE from_task_id = ? AND to_task_id = ?",
             (source_task_id, target_task_id),
         )
     return cursor.rowcount > 0

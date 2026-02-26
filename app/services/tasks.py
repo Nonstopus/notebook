@@ -212,8 +212,19 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
     return converted
 
 
-def create_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
-    return storage.create_task_link(db_path, source_task_id, target_task_id)
+def create_task_link(
+    db_path: Path,
+    source_task_id: int,
+    target_task_id: int,
+    *,
+    prevent_cycles: bool = True,
+) -> bool:
+    return storage.create_task_link(
+        db_path,
+        source_task_id,
+        target_task_id,
+        prevent_cycles=prevent_cycles,
+    )
 
 
 def list_task_links(db_path: Path, task_id: Optional[int] = None) -> List[Tuple[int, int]]:

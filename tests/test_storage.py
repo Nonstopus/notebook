@@ -367,7 +367,7 @@ def test_task_links_schema_and_metadata(tmp_path):
 
     with storage.get_conn(db_path) as conn:
         row = conn.execute(
-            "SELECT from_task_id, to_task_id, type, created_at, updated_at FROM task_links"
+            "SELECT from_task_id, to_task_id, type, created_at, updated_at FROM task_dependencies"
         ).fetchone()
 
     assert row["from_task_id"] == first.id

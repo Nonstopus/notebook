@@ -20,7 +20,7 @@ from .storage import DB_NAME
 
 try:
     from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
-    from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QPainter, QPen, QPolygonF
+    from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QPainter, QPainterPath, QPen, QPolygonF
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -31,10 +31,10 @@ try:
         QFormLayout,
         QFrame,
         QFileDialog,
-        QGraphicsEllipseItem,
-        QGraphicsLineItem,
+        QGraphicsItem,
+        QGraphicsPathItem,
+        QGraphicsRectItem,
         QGraphicsScene,
-        QGraphicsSimpleTextItem,
         QGraphicsView,
         QHBoxLayout,
         QInputDialog,
@@ -64,8 +64,8 @@ except ImportError as exc:  # pragma: no cover - runtime guard for optional GUI 
 
 
 DB_PATH = Path(DB_NAME)
-NODE_WIDTH = 180
-NODE_HEIGHT = 70
+NODE_WIDTH = 260
+NODE_HEIGHT = 132
 ROLE_ITEM_REF = Qt.ItemDataRole.UserRole
 ROLE_META = Qt.ItemDataRole.UserRole + 1
 ROLE_PROGRESS = Qt.ItemDataRole.UserRole + 2
@@ -394,7 +394,7 @@ class TaskTreeWidget(QTreeWidget):
             self.subtasks_reordered.emit(parent_ref.id, ordered_subtask_ids)
 
 
-class GraphEdgeItem(QGraphicsLineItem):
+class GraphEdgeItem(QGraphicsPathItem):
     def __init__(self, source_item: "GraphNodeItem", target_item: "GraphNodeItem", relation_type: str):
         super().__init__()
         self.source_item = source_item
@@ -402,48 +402,68 @@ class GraphEdgeItem(QGraphicsLineItem):
         self.relation_type = relation_type
         self.setZValue(-1)
         self._arrow_points = (QPointF(), QPointF(), QPointF())
+        self._highlighted = False
         self._apply_style()
         self.update_position()
 
     def _apply_style(self) -> None:
-        if self.relation_type == "hierarchy":
-            pen = QPen(QColor("#2D9D5B"), 2)
-        elif self.relation_type == "subtask_dependency":
-            pen = QPen(QColor("#9A4DFF"), 2)
-            pen.setStyle(Qt.PenStyle.DotLine)
-        else:
-            pen = QPen(QColor("#435A78"), 2)
-            pen.setStyle(Qt.PenStyle.DashLine)
+        color = QColor("#3F5A78")
+        width = 2.0
+        if self.relation_type == "cyclic_dependency":
+            color = QColor("#B3541E")
+            width = 2.4
+        self._base_pen = QPen(color, width)
+        self.setPen(self._base_pen)
+
+    def set_highlighted(self, highlighted: bool) -> None:
+        self._highlighted = highlighted
+        pen = QPen(self._base_pen)
+        if highlighted:
+            pen.setWidthF(self._base_pen.widthF() + 1.8)
+            pen.setColor(QColor("#1D3557"))
         self.setPen(pen)
+        self.update()
+
+    def _connection_points(self) -> tuple[QPointF, QPointF]:
+        source_rect = self.source_item.sceneBoundingRect()
+        target_rect = self.target_item.sceneBoundingRect()
+
+        if target_rect.center().x() >= source_rect.center().x():
+            start = QPointF(source_rect.right(), source_rect.center().y())
+            end = QPointF(target_rect.left(), target_rect.center().y())
+        else:
+            start = QPointF(source_rect.left(), source_rect.center().y())
+            end = QPointF(target_rect.right(), target_rect.center().y())
+        return start, end
 
     def update_position(self) -> None:
-        source = self.source_item.scene_center()
-        target = self.target_item.scene_center()
+        start, end = self._connection_points()
+        middle_x = (start.x() + end.x()) / 2
 
-        dx = target.x() - source.x()
-        dy = target.y() - source.y()
+        path = QPainterPath(start)
+        path.lineTo(QPointF(middle_x, start.y()))
+        path.lineTo(QPointF(middle_x, end.y()))
+        path.lineTo(end)
+        self.setPath(path)
+
+        prev = QPointF(middle_x, end.y())
+        dx = end.x() - prev.x()
+        dy = end.y() - prev.y()
+        if abs(dx) < 1 and abs(dy) < 1:
+            dx = end.x() - start.x()
+            dy = end.y() - start.y()
         length = max(1.0, math.hypot(dx, dy))
         ux = dx / length
         uy = dy / length
 
-        start = QPointF(
-            source.x() + ux * (NODE_WIDTH / 2),
-            source.y() + uy * (NODE_HEIGHT / 2),
-        )
-        end = QPointF(
-            target.x() - ux * (NODE_WIDTH / 2),
-            target.y() - uy * (NODE_HEIGHT / 2),
-        )
-        self.setLine(start.x(), start.y(), end.x(), end.y())
-
         arrow_size = 10.0
         left = QPointF(
-            end.x() - ux * arrow_size - uy * (arrow_size * 0.5),
-            end.y() - uy * arrow_size + ux * (arrow_size * 0.5),
+            end.x() - ux * arrow_size - uy * (arrow_size * 0.55),
+            end.y() - uy * arrow_size + ux * (arrow_size * 0.55),
         )
         right = QPointF(
-            end.x() - ux * arrow_size + uy * (arrow_size * 0.5),
-            end.y() - uy * arrow_size - ux * (arrow_size * 0.5),
+            end.x() - ux * arrow_size + uy * (arrow_size * 0.55),
+            end.y() - uy * arrow_size - ux * (arrow_size * 0.55),
         )
         self._arrow_points = (end, left, right)
 
@@ -457,29 +477,96 @@ class GraphEdgeItem(QGraphicsLineItem):
         painter.restore()
 
 
-class GraphNodeItem(QGraphicsEllipseItem):
-    def __init__(self, dialog: "TaskGraphDialog", node_id: str, title: str, *, is_subtask: bool = False):
+class GraphNodeItem(QGraphicsRectItem):
+    def __init__(self, dialog: "TaskGraphDialog", task, progress_text: str, progress_ratio: float):
         super().__init__(0, 0, NODE_WIDTH, NODE_HEIGHT)
         self.dialog = dialog
-        self.node_id = node_id
-        self.edges = []
+        self.task_id = task.id
+        self.node_id = dialog._task_node_id(task.id)
+        self.task_title = task.title
+        self.edges: list[GraphEdgeItem] = []
 
-        self.setPen(QPen(Qt.GlobalColor.black, 1))
-        self.setBrush(QBrush(QColor("#F5FBF7") if is_subtask else Qt.GlobalColor.white))
+        self.setPen(QPen(QColor("#9AA8B7"), 1.2))
+        self.setBrush(QBrush(QColor("#FFFFFF")))
         self.setFlags(
-            QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable
-            | QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable
+            QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+            | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
+        self.setAcceptHoverEvents(True)
 
-        label = QGraphicsSimpleTextItem(title, self)
-        label.setPos(12, NODE_HEIGHT / 2 - 10)
+        self._title_text = self.dialog.scene.addText("")
+        self._meta_text = self.dialog.scene.addText("")
+        self._progress_text = self.dialog.scene.addText("")
+        for text_item in (self._title_text, self._meta_text, self._progress_text):
+            text_item.setParentItem(self)
+
+        self._title_text.setDefaultTextColor(QColor("#1F2933"))
+        self._meta_text.setDefaultTextColor(QColor("#5D6A79"))
+        self._progress_text.setDefaultTextColor(QColor("#4E8F75"))
+
+        self._progress_ratio = max(0.0, min(1.0, progress_ratio))
+        self._progress_text_value = progress_text
+        self._render_card(task)
+
+    def _render_card(self, task) -> None:
+        due = task.due_datetime.strftime("%d.%m") if task.due_datetime else "—"
+        status = "✅ Done" if task.is_done else "🟡 Open"
+        title = f"#{task.id} {task.title}"
+        if len(title) > 34:
+            title = title[:31] + "..."
+
+        self._title_text.setPlainText(title)
+        self._meta_text.setPlainText(f"{status} · {task.priority} · дедлайн {due}")
+        self._progress_text.setPlainText(self._progress_text_value)
+        self._title_text.setPos(10, 8)
+        self._meta_text.setPos(10, 38)
+        self._progress_text.setPos(10, 100)
 
     def scene_center(self) -> QPointF:
         return self.scenePos() + QPointF(NODE_WIDTH / 2, NODE_HEIGHT / 2)
 
+    def _progress_rect(self) -> QRectF:
+        return QRectF(10, 78, NODE_WIDTH - 20, 12)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        super().paint(painter, option, widget)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        bg_color = QColor("#F2F7FF") if self.isSelected() else QColor("#FFFFFF")
+        border_color = QColor("#3F5A78") if self.isSelected() else QColor("#9AA8B7")
+        painter.setBrush(QBrush(bg_color))
+        painter.setPen(QPen(border_color, 1.4))
+        painter.drawRoundedRect(self.rect(), 8, 8)
+
+        progress_bg = self._progress_rect()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor("#DCE3EA")))
+        painter.drawRoundedRect(progress_bg, 4, 4)
+
+        progress_fill = QRectF(progress_bg)
+        progress_fill.setWidth(progress_bg.width() * self._progress_ratio)
+        painter.setBrush(QBrush(QColor("#4E8F75")))
+        painter.drawRoundedRect(progress_fill, 4, 4)
+        painter.restore()
+
+    def hoverEnterEvent(self, event) -> None:
+        self.dialog.highlight_relations(self.task_id)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:
+        self.dialog.clear_relation_highlight()
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dialog.open_task_details(self.task_id)
+
     def itemChange(self, change, value):
         result = super().itemChange(change, value)
-        if change == QGraphicsEllipseItem.GraphicsItemChange.ItemPositionHasChanged:
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             for edge in self.edges:
                 edge.update_position()
             self.dialog.persist_layout(self.node_id, result)
@@ -487,26 +574,16 @@ class GraphNodeItem(QGraphicsEllipseItem):
 
 
 class TaskGraphDialog(QDialog):
-    RELATION_ALL = "Все связи"
-    RELATION_HIERARCHY = "Только иерархия"
-    RELATION_DEPENDENCY = "Только зависимости"
-
     def __init__(self, db_path: Path, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.db_path = db_path
         self._node_items: Dict[str, GraphNodeItem] = {}
         self._graph_links: set[Tuple[str, str, str]] = set()
-        self._last_fingerprint: Optional[
-            Tuple[
-                Tuple[int, ...],
-                Tuple[Tuple[int, int], ...],
-                Tuple[Tuple[int, int], ...],
-                Tuple[Tuple[int, int, str], ...],
-            ]
-        ] = None
+        self._last_fingerprint: Optional[Tuple[Tuple[int, ...], Tuple[Tuple[int, int], ...]]] = None
+        self._cycle_edges: set[tuple[int, int]] = set()
 
-        self.setWindowTitle("Граф задач")
-        self.resize(1000, 680)
+        self.setWindowTitle("Граф зависимостей задач")
+        self.resize(1120, 700)
         self._build_ui()
         self._sync_timer = QTimer(self)
         self._sync_timer.setInterval(1200)
@@ -518,24 +595,10 @@ class TaskGraphDialog(QDialog):
     def _task_node_id(task_id: int) -> str:
         return f"task:{task_id}"
 
-    @staticmethod
-    def _subtask_node_id(subtask_id: int) -> str:
-        return f"subtask:{subtask_id}"
-
     def _current_fingerprint(self):
         all_tasks = task_service.list_tasks(self.db_path)
         dependencies = task_service.list_task_links(self.db_path)
-        subtask_dependencies = task_service.list_subtask_links(self.db_path)
-        hierarchy: list[tuple[int, int]] = []
-        for task in all_tasks:
-            for subtask in task_service.list_subtasks(self.db_path, task.id):
-                hierarchy.append((task.id, subtask.id))
-        return (
-            tuple(sorted(task.id for task in all_tasks)),
-            tuple(sorted(dependencies)),
-            tuple(sorted(hierarchy)),
-            tuple(sorted(subtask_dependencies)),
-        )
+        return (tuple(sorted(task.id for task in all_tasks)), tuple(sorted(dependencies)))
 
     def _refresh_if_data_changed(self) -> None:
         current = self._current_fingerprint()
@@ -546,19 +609,18 @@ class TaskGraphDialog(QDialog):
         layout = QVBoxLayout(self)
 
         controls = QHBoxLayout()
-        add_link_btn = QPushButton("Создать связь", self)
+        add_link_btn = QPushButton("Создать зависимость", self)
         add_link_btn.clicked.connect(self.add_link)
         controls.addWidget(add_link_btn)
 
-        remove_link_btn = QPushButton("Удалить связь", self)
+        remove_link_btn = QPushButton("Удалить зависимость", self)
         remove_link_btn.clicked.connect(self.remove_link)
         controls.addWidget(remove_link_btn)
 
-        controls.addWidget(QLabel("Показать", self))
-        self.relation_filter = QComboBox(self)
-        self.relation_filter.addItems([self.RELATION_ALL, self.RELATION_HIERARCHY, self.RELATION_DEPENDENCY])
-        self.relation_filter.currentIndexChanged.connect(self.refresh_graph)
-        controls.addWidget(self.relation_filter)
+        self.cycle_mode = QCheckBox("Показывать циклы", self)
+        self.cycle_mode.setChecked(True)
+        self.cycle_mode.stateChanged.connect(self.refresh_graph)
+        controls.addWidget(self.cycle_mode)
 
         refresh_btn = QPushButton("Обновить", self)
         refresh_btn.clicked.connect(self.refresh_graph)
@@ -567,74 +629,98 @@ class TaskGraphDialog(QDialog):
         controls.addStretch(1)
         layout.addLayout(controls)
 
-        legend = QFrame(self)
-        legend_layout = QHBoxLayout(legend)
-        legend_layout.setContentsMargins(8, 6, 8, 6)
-        hierarchy_legend = QLabel("━━ Иерархия task → subtask", legend)
-        hierarchy_legend.setStyleSheet("color: #2D9D5B;")
-        task_dependency_legend = QLabel("- - - task → task", legend)
-        task_dependency_legend.setStyleSheet("color: #435A78;")
-        subtask_dependency_legend = QLabel("⋯⋯⋯ subtask → subtask", legend)
-        subtask_dependency_legend.setStyleSheet("color: #9A4DFF;")
-        legend_layout.addWidget(hierarchy_legend)
-        legend_layout.addSpacing(20)
-        legend_layout.addWidget(task_dependency_legend)
-        legend_layout.addSpacing(20)
-        legend_layout.addWidget(subtask_dependency_legend)
-        legend_layout.addStretch(1)
+        self.warning_label = QLabel("", self)
+        self.warning_label.setStyleSheet("color: #B3541E; font-weight: 600;")
+        layout.addWidget(self.warning_label)
+
+        legend = QLabel("Сплошная стрелка: task dependency · Оранжевая стрелка: ребро в цикле", self)
+        legend.setStyleSheet("color: #435A78;")
         layout.addWidget(legend)
 
         self.scene = QGraphicsScene(self)
-        self.scene.setSceneRect(0, 0, 1600, 1100)
+        self.scene.setSceneRect(0, 0, 2200, 1400)
 
         self.view = QGraphicsView(self.scene, self)
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         layout.addWidget(self.view)
 
+    @staticmethod
+    def _build_levels(task_ids: list[int], edges: list[tuple[int, int]]) -> tuple[dict[int, int], set[tuple[int, int]]]:
+        incoming: dict[int, set[int]] = {task_id: set() for task_id in task_ids}
+        outgoing: dict[int, set[int]] = {task_id: set() for task_id in task_ids}
+        for source, target in edges:
+            incoming.setdefault(target, set()).add(source)
+            outgoing.setdefault(source, set()).add(target)
+            incoming.setdefault(source, incoming.get(source, set()))
+            outgoing.setdefault(target, outgoing.get(target, set()))
+
+        indegree = {node: len(pred) for node, pred in incoming.items()}
+        queue = sorted([node for node, deg in indegree.items() if deg == 0])
+        levels = {node: 0 for node in queue}
+        visited = []
+
+        while queue:
+            node = queue.pop(0)
+            visited.append(node)
+            for child in sorted(outgoing.get(node, set())):
+                levels[child] = max(levels.get(child, 0), levels[node] + 1)
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    queue.append(child)
+
+        cycle_nodes = set(task_ids) - set(visited)
+        cycle_edges = {(s, t) for s, t in edges if s in cycle_nodes and t in cycle_nodes}
+        max_level = max(levels.values(), default=0)
+        for node in sorted(cycle_nodes):
+            levels[node] = max_level + 1
+        return levels, cycle_edges
+
     def refresh_graph(self, force: bool = False) -> None:
         self.scene.clear()
         self._node_items.clear()
 
-        all_tasks = task_service.list_tasks(self.db_path)
+        tasks = task_service.list_tasks(self.db_path)
+        task_ids = [task.id for task in tasks]
+        task_map = {task.id: task for task in tasks}
         layouts = task_service.get_task_layouts(self.db_path)
-        task_dependency_links = {
-            (self._task_node_id(source), self._task_node_id(target), "task_dependency")
-            for source, target in task_service.list_task_links(self.db_path)
+        dependencies = sorted(task_service.list_task_links(self.db_path))
+
+        levels, cycle_edges = self._build_levels(task_ids, dependencies)
+        self._cycle_edges = cycle_edges
+
+        if cycle_edges:
+            self.warning_label.setText(
+                "⚠ Найдены циклы зависимостей. Циклические ребра подсвечены оранжевым, узлы вынесены в fallback-слой."
+            )
+        else:
+            self.warning_label.setText("")
+
+        columns: dict[int, list[int]] = {}
+        for task_id in task_ids:
+            columns.setdefault(levels.get(task_id, 0), []).append(task_id)
+
+        for level in sorted(columns):
+            columns[level].sort()
+            for row_index, task_id in enumerate(columns[level]):
+                task = task_map[task_id]
+                completed, total = task_service.subtask_progress(self.db_path, task.id)
+                ratio = 1.0 if total == 0 and task.is_done else (0.0 if total == 0 else completed / total)
+                progress_text = f"Прогресс: {completed}/{total}"
+                node = GraphNodeItem(self, task, progress_text, ratio)
+                x, y = layouts.get(task.id, (100.0 + level * 340.0, 80.0 + row_index * 190.0))
+                node.setPos(float(x), float(y))
+                self.scene.addItem(node)
+                self._node_items[node.node_id] = node
+
+        self._graph_links = {
+            (self._task_node_id(source), self._task_node_id(target), "cyclic_dependency" if (source, target) in cycle_edges else "dependency")
+            for source, target in dependencies
         }
-        subtask_dependency_links = {
-            (self._subtask_node_id(source), self._subtask_node_id(target), "subtask_dependency")
-            for source, target, _ in task_service.list_subtask_links(self.db_path)
-        }
-        hierarchy_links = set()
 
-        for index, task in enumerate(all_tasks):
-            node_id = self._task_node_id(task.id)
-            node = GraphNodeItem(self, node_id, f"#{task.id} {task.title}")
-            x, y = layouts.get(task.id, (80.0 + (index % 5) * 230.0, 80.0 + (index // 5) * 140.0))
-            node.setPos(float(x), float(y))
-            self.scene.addItem(node)
-            self._node_items[node_id] = node
-
-            subtasks = task_service.list_subtasks(self.db_path, task.id)
-            for sub_index, subtask in enumerate(subtasks):
-                subtask_node_id = self._subtask_node_id(subtask.id)
-                sub_node = GraphNodeItem(self, subtask_node_id, f"↳ #{subtask.id} {subtask.title}", is_subtask=True)
-                sx = float(x) + 70.0 + ((sub_index % 2) * 190.0)
-                sy = float(y) + 110.0 + (sub_index * 85.0)
-                sub_node.setPos(sx, sy)
-                self.scene.addItem(sub_node)
-                self._node_items[subtask_node_id] = sub_node
-                hierarchy_links.add((node_id, subtask_node_id, "hierarchy"))
-
-        self._graph_links = task_dependency_links | subtask_dependency_links | hierarchy_links
-        selected_filter = self.relation_filter.currentText()
         for source_id, target_id, relation_type in sorted(self._graph_links):
-            if selected_filter == self.RELATION_HIERARCHY and relation_type != "hierarchy":
+            if relation_type == "cyclic_dependency" and not self.cycle_mode.isChecked():
                 continue
-            if selected_filter == self.RELATION_DEPENDENCY and relation_type == "hierarchy":
-                continue
-
             source_node = self._node_items.get(source_id)
             target_node = self._node_items.get(target_id)
             if not source_node or not target_node:
@@ -645,6 +731,26 @@ class TaskGraphDialog(QDialog):
             target_node.edges.append(edge)
 
         self._last_fingerprint = self._current_fingerprint()
+
+    def highlight_relations(self, task_id: int) -> None:
+        node_key = self._task_node_id(task_id)
+        for edge in [item for item in self.scene.items() if isinstance(item, GraphEdgeItem)]:
+            connected = edge.source_item.node_id == node_key or edge.target_item.node_id == node_key
+            edge.set_highlighted(connected)
+
+    def clear_relation_highlight(self) -> None:
+        for edge in [item for item in self.scene.items() if isinstance(item, GraphEdgeItem)]:
+            edge.set_highlighted(False)
+
+    def open_task_details(self, task_id: int) -> None:
+        task = task_service.get_task(self.db_path, task_id)
+        if not task:
+            return
+        QMessageBox.information(
+            self,
+            f"Задача #{task.id}",
+            f"{task.title}\n\nСтатус: {'Done' if task.is_done else 'Open'}\nПриоритет: {task.priority}",
+        )
 
     def persist_layout(self, node_id: str, position: QPointF) -> None:
         if not node_id.startswith("task:"):
@@ -661,82 +767,43 @@ class TaskGraphDialog(QDialog):
         return options[index][0]
 
     def add_link(self) -> None:
-        link_kind, ok = QInputDialog.getItem(
-            self,
-            "Тип связи",
-            "Выберите тип",
-            ["task → task", "subtask → subtask"],
-            0,
-            False,
-        )
-        if not ok:
+        all_tasks = task_service.list_tasks(self.db_path)
+        if len(all_tasks) < 2:
+            QMessageBox.information(self, "Недостаточно задач", "Нужно минимум две задачи")
             return
-
-        if link_kind == "task → task":
-            all_tasks = task_service.list_tasks(self.db_path)
-            if len(all_tasks) < 2:
-                QMessageBox.information(self, "Недостаточно задач", "Нужно минимум две задачи")
-                return
-            options = [(task.id, task.title) for task in all_tasks]
-            source_id = self._pick_task_id("Источник связи", options)
-            if source_id is None:
-                return
-            target_options = [pair for pair in options if pair[0] != source_id]
-            target_id = self._pick_task_id("Цель связи", target_options)
-            if target_id is None:
-                return
-            created = task_service.create_task_link(self.db_path, source_id, target_id)
-        else:
-            subtasks = []
-            for task in task_service.list_tasks(self.db_path):
-                for subtask in task_service.list_subtasks(self.db_path, task.id):
-                    subtasks.append((subtask.id, f"#{subtask.id} {subtask.title} (task #{task.id})"))
-            if len(subtasks) < 2:
-                QMessageBox.information(self, "Недостаточно подзадач", "Нужно минимум две подзадачи")
-                return
-
-            source_id = self._pick_task_id("Источник связи", subtasks)
-            if source_id is None:
-                return
-            target_options = [pair for pair in subtasks if pair[0] != source_id]
-            target_id = self._pick_task_id("Цель связи", target_options)
-            if target_id is None:
-                return
-            created = task_service.create_subtask_link(self.db_path, source_id, target_id)
+        options = [(task.id, task.title) for task in all_tasks]
+        source_id = self._pick_task_id("Источник зависимости", options)
+        if source_id is None:
+            return
+        target_options = [pair for pair in options if pair[0] != source_id]
+        target_id = self._pick_task_id("Цель зависимости", target_options)
+        if target_id is None:
+            return
+        created = task_service.create_task_link(self.db_path, source_id, target_id)
 
         if not created:
             QMessageBox.warning(
                 self,
-                "Связь не создана",
+                "Зависимость не создана",
                 "Проверьте, что связь не дублируется и не образует цикл.",
             )
             return
         self.refresh_graph(force=True)
 
     def remove_link(self) -> None:
-        task_links = [("task", source, target) for source, target in task_service.list_task_links(self.db_path)]
-        subtask_links = [
-            ("subtask", source, target)
-            for source, target, _ in task_service.list_subtask_links(self.db_path)
-        ]
-        links = sorted(task_links + subtask_links)
+        links = sorted(task_service.list_task_links(self.db_path))
         if not links:
-            QMessageBox.information(self, "Нет связей", "Удалять пока нечего")
+            QMessageBox.information(self, "Нет зависимостей", "Удалять пока нечего")
             return
 
-        link_labels = [
-            f"{kind}: {source} -> {target}" for kind, source, target in links
-        ]
-        selected, ok = QInputDialog.getItem(self, "Удалить связь", "Выберите связь", link_labels, 0, False)
+        link_labels = [f"task: {source} -> {target}" for source, target in links]
+        selected, ok = QInputDialog.getItem(self, "Удалить зависимость", "Выберите связь", link_labels, 0, False)
         if not ok:
             return
 
         index = link_labels.index(selected)
-        kind, source_id, target_id = links[index]
-        if kind == "task":
-            task_service.delete_task_link(self.db_path, source_id, target_id)
-        else:
-            task_service.delete_subtask_link(self.db_path, source_id, target_id)
+        source_id, target_id = links[index]
+        task_service.delete_task_link(self.db_path, source_id, target_id)
         self.refresh_graph(force=True)
 
 
