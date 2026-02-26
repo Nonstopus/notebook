@@ -4,7 +4,7 @@ import math
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .models import ItemKind, TreeItemRef
 from .services import tasks as task_service
@@ -887,13 +887,13 @@ class TaskQtWindow(QMainWindow):
         add_subtask_btn.clicked.connect(self.add_subtask)
         left_actions.addWidget(add_subtask_btn)
 
-        complete_btn = QPushButton("Отметить выполненной", self)
-        complete_btn.clicked.connect(self.mark_selected_done)
-        left_actions.addWidget(complete_btn)
+        self.complete_btn = QPushButton("Переключить выполнение", self)
+        self.complete_btn.clicked.connect(self.toggle_selected_done)
+        left_actions.addWidget(self.complete_btn)
 
-        delete_btn = QPushButton("Удалить", self)
-        delete_btn.clicked.connect(self.delete_task)
-        left_actions.addWidget(delete_btn)
+        self.delete_btn = QPushButton("Удалить", self)
+        self.delete_btn.clicked.connect(self.delete_task)
+        left_actions.addWidget(self.delete_btn)
 
         convert_btn = QPushButton("Сделать подзадачей…", self)
         convert_btn.clicked.connect(self.convert_task_to_subtask)
@@ -936,9 +936,9 @@ class TaskQtWindow(QMainWindow):
         right_layout.addLayout(form)
 
         card_actions = QHBoxLayout()
-        save_card_btn = QPushButton("Сохранить", self)
-        save_card_btn.clicked.connect(self.save_selected_task)
-        card_actions.addWidget(save_card_btn)
+        self.save_card_btn = QPushButton("Сохранить", self)
+        self.save_card_btn.clicked.connect(self.save_selected_task)
+        card_actions.addWidget(self.save_card_btn)
 
         clear_reminder_btn = QPushButton("Очистить напоминание", self)
         clear_reminder_btn.clicked.connect(self.clear_selected_reminder)
@@ -971,6 +971,33 @@ class TaskQtWindow(QMainWindow):
         self.task_delegate.set_density(density)
         self.tasks_list.doItemsLayout()
         self.tasks_list.viewport().update()
+
+    def _run_ui_flow(
+        self,
+        *,
+        busy_widget: Optional[QWidget],
+        operation: Callable[[], object],
+        on_success: Callable[[object], None],
+        error_message: str,
+    ) -> bool:
+        if busy_widget is not None:
+            busy_widget.setEnabled(False)
+
+        try:
+            payload = operation()
+        except Exception:
+            QMessageBox.warning(self, "Ошибка", error_message)
+            return False
+        finally:
+            if busy_widget is not None:
+                busy_widget.setEnabled(True)
+
+        if payload is None or payload is False:
+            QMessageBox.warning(self, "Ошибка", error_message)
+            return False
+
+        on_success(payload)
+        return True
 
     def clear_search(self) -> None:
         self.search_input.setText("")
@@ -1245,19 +1272,30 @@ class TaskQtWindow(QMainWindow):
             return
         new_title = item.text(0).strip().replace("↳ ", "")
         if not new_title:
+            QMessageBox.information(self, "Пустой заголовок", "Введите название")
+            self.refresh_tasks()
             return
         if item_ref.kind == ItemKind.SUBTASK:
-            task_service.update_subtask(self.db_path, item_ref.id, title=new_title)
-            self.refresh_tasks()
-            self._focus_subtask_in_tree(item_ref.parent_task_id or 0, item_ref.id)
+            self._run_ui_flow(
+                busy_widget=self.tasks_list,
+                operation=lambda: task_service.update_subtask(self.db_path, item_ref.id, title=new_title),
+                on_success=lambda updated: (
+                    self.refresh_tasks(),
+                    self._focus_subtask_in_tree(updated.task_id, updated.id),
+                ),
+                error_message="Не удалось обновить подзадачу. Попробуйте снова.",
+            )
             return
-        task_service.update_task(self.db_path, item_ref.id, title=new_title)
-        self.refresh_tasks()
-        self._select_task_in_tree(item_ref.id)
+        self._run_ui_flow(
+            busy_widget=self.tasks_list,
+            operation=lambda: task_service.update_task(self.db_path, item_ref.id, title=new_title),
+            on_success=lambda updated: (self.refresh_tasks(), self._select_task_in_tree(updated.id)),
+            error_message="Не удалось обновить задачу. Попробуйте снова.",
+        )
 
     def _handle_quick_action(self, action: str) -> None:
         if action == "done":
-            self.mark_selected_done()
+            self.toggle_selected_done()
         elif action == "delete":
             self.delete_task()
         elif action == "edit":
@@ -1295,34 +1333,37 @@ class TaskQtWindow(QMainWindow):
         done = self.status_checkbox.isChecked()
 
         if item_ref.kind == ItemKind.SUBTASK:
-            updated = task_service.update_subtask(
+            self._run_ui_flow(
+                busy_widget=self.save_card_btn,
+                operation=lambda: task_service.update_subtask(
+                    self.db_path,
+                    item_ref.id,
+                    title=title,
+                    is_done=done,
+                    reminder_datetime=reminder,
+                    note=note,
+                ),
+                on_success=lambda updated: (
+                    self.refresh_tasks(),
+                    self._focus_subtask_in_tree(updated.task_id, updated.id),
+                ),
+                error_message="Не удалось сохранить подзадачу. Проверьте данные и попробуйте снова.",
+            )
+            return
+
+        self._run_ui_flow(
+            busy_widget=self.save_card_btn,
+            operation=lambda: task_service.update_task(
                 self.db_path,
                 item_ref.id,
                 title=title,
                 is_done=done,
                 reminder_datetime=reminder,
                 note=note,
-            )
-            if not updated:
-                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить подзадачу")
-                return
-            self.refresh_tasks()
-            self._focus_subtask_in_tree(updated.task_id, updated.id)
-            return
-
-        updated = task_service.update_task(
-            self.db_path,
-            item_ref.id,
-            title=title,
-            is_done=done,
-            reminder_datetime=reminder,
-            note=note,
+            ),
+            on_success=lambda updated: (self.refresh_tasks(), self._select_task_in_tree(updated.id)),
+            error_message="Не удалось сохранить задачу. Проверьте данные и попробуйте снова.",
         )
-        if not updated:
-            QMessageBox.warning(self, "Ошибка", "Не удалось сохранить задачу")
-            return
-        self.refresh_tasks()
-        self._select_task_in_tree(updated.id)
 
     def add_subtask(self) -> None:
         task = self._selected_task()
@@ -1347,15 +1388,23 @@ class TaskQtWindow(QMainWindow):
         self.refresh_tasks()
         self._focus_subtask_in_tree(task.id, created.id)
 
-    def mark_selected_done(self) -> None:
+    def toggle_selected_done(self) -> None:
         subtask_id = self._selected_subtask_id()
         if subtask_id is not None:
-            updated = task_service.update_subtask(self.db_path, subtask_id, is_done=True)
-            if not updated:
-                QMessageBox.warning(self, "Ошибка", "Не удалось отметить подзадачу")
+            current = task_service.get_subtask(self.db_path, subtask_id)
+            if not current:
+                QMessageBox.warning(self, "Ошибка", "Подзадача не найдена. Обновите список.")
+                self.refresh_tasks()
                 return
-            self.refresh_tasks()
-            self._focus_subtask_in_tree(updated.task_id, updated.id)
+            self._run_ui_flow(
+                busy_widget=self.complete_btn,
+                operation=lambda: task_service.update_subtask(self.db_path, subtask_id, is_done=not current.is_done),
+                on_success=lambda updated: (
+                    self.refresh_tasks(),
+                    self._focus_subtask_in_tree(updated.task_id, updated.id),
+                ),
+                error_message="Не удалось обновить статус подзадачи. Попробуйте снова.",
+            )
             return
 
         task = self._selected_task()
@@ -1363,9 +1412,15 @@ class TaskQtWindow(QMainWindow):
             QMessageBox.information(self, "Выберите задачу", "Выберите задачу или подзадачу")
             return
 
-        task_service.update_task(self.db_path, task.id, is_done=True)
-        self.refresh_tasks()
-        self._select_task_in_tree(task.id)
+        self._run_ui_flow(
+            busy_widget=self.complete_btn,
+            operation=lambda: task_service.update_task(self.db_path, task.id, is_done=not task.is_done),
+            on_success=lambda updated: (self.refresh_tasks(), self._select_task_in_tree(updated.id)),
+            error_message="Не удалось обновить статус задачи. Попробуйте снова.",
+        )
+
+    def mark_selected_done(self) -> None:
+        self.toggle_selected_done()
 
     def clear_selected_reminder(self) -> None:
         item_ref = self._selected_item_ref()
@@ -1391,8 +1446,12 @@ class TaskQtWindow(QMainWindow):
             answer = QMessageBox.question(self, "Удалить подзадачу", "Удалить выбранную подзадачу?")
             if answer != QMessageBox.StandardButton.Yes:
                 return
-            task_service.delete_subtask(self.db_path, subtask_id)
-            self.refresh_tasks()
+            self._run_ui_flow(
+                busy_widget=self.delete_btn,
+                operation=lambda: task_service.delete_subtask(self.db_path, subtask_id),
+                on_success=lambda _result: self.refresh_tasks(),
+                error_message="Не удалось удалить подзадачу. Попробуйте снова.",
+            )
             return
 
         task = self._selected_task()
@@ -1404,8 +1463,12 @@ class TaskQtWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        task_service.delete_task(self.db_path, task.id)
-        self.refresh_tasks()
+        self._run_ui_flow(
+            busy_widget=self.delete_btn,
+            operation=lambda: task_service.delete_task(self.db_path, task.id),
+            on_success=lambda _result: self.refresh_tasks(),
+            error_message="Не удалось удалить задачу. Попробуйте снова.",
+        )
 
     def convert_task_to_subtask(self) -> None:
         if self._selected_subtask_id() is not None:
@@ -1468,7 +1531,7 @@ class TaskQtWindow(QMainWindow):
         menu = QMenu(self)
         create_task_action = menu.addAction("Новая задача")
         create_subtask_action = menu.addAction("Новая подзадача")
-        mark_done_action = menu.addAction("Отметить выполненной")
+        mark_done_action = menu.addAction("Переключить выполнение")
         delete_action = menu.addAction("Удалить")
         menu.addSeparator()
         convert_action = menu.addAction("Сделать подзадачей…")
@@ -1478,7 +1541,7 @@ class TaskQtWindow(QMainWindow):
         if chosen == create_subtask_action:
             self.add_subtask()
         if chosen == mark_done_action:
-            self.mark_selected_done()
+            self.toggle_selected_done()
         if chosen == delete_action:
             self.delete_task()
         if chosen == convert_action:
