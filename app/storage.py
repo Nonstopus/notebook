@@ -70,12 +70,15 @@ def init_db(db_path: Path) -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS task_links (
-                source_task_id INTEGER NOT NULL,
-                target_task_id INTEGER NOT NULL,
-                PRIMARY KEY (source_task_id, target_task_id),
-                FOREIGN KEY(source_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                FOREIGN KEY(target_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                CHECK (source_task_id != target_task_id)
+                from_task_id INTEGER NOT NULL,
+                to_task_id INTEGER NOT NULL,
+                type TEXT NOT NULL DEFAULT 'depends_on',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (from_task_id, to_task_id),
+                FOREIGN KEY(from_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(to_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                CHECK (from_task_id != to_task_id)
             );
             """
         )
@@ -270,7 +273,7 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
             """
             SELECT COUNT(*)
             FROM task_links
-            WHERE source_task_id = ? OR target_task_id = ?
+            WHERE from_task_id = ? OR to_task_id = ?
             """,
             (child_task_id, child_task_id),
         ).fetchone()[0]
@@ -373,9 +376,9 @@ def subtask_progress(db_path: Path, task_id: int) -> Tuple[int, int]:
 def _would_create_cycle(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
     graph: Dict[int, List[int]] = {}
     with get_conn(db_path) as conn:
-        rows = conn.execute("SELECT source_task_id, target_task_id FROM task_links").fetchall()
+        rows = conn.execute("SELECT from_task_id, to_task_id FROM task_links").fetchall()
     for row in rows:
-        graph.setdefault(row["source_task_id"], []).append(row["target_task_id"])
+        graph.setdefault(row["from_task_id"], []).append(row["to_task_id"])
 
     stack = [target_task_id]
     visited = set()
@@ -393,9 +396,9 @@ def _would_create_cycle(db_path: Path, source_task_id: int, target_task_id: int)
 def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
     with get_conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT source_task_id, target_task_id FROM task_links ORDER BY source_task_id, target_task_id"
+            "SELECT from_task_id, to_task_id FROM task_links ORDER BY from_task_id, to_task_id"
         ).fetchall()
-    return [(row["source_task_id"], row["target_task_id"]) for row in rows]
+    return [(row["from_task_id"], row["to_task_id"]) for row in rows]
 
 
 def create_task_link(
@@ -412,13 +415,14 @@ def create_task_link(
     if prevent_cycles and _would_create_cycle(db_path, source_task_id, target_task_id):
         return False
 
+    now = _now()
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT OR IGNORE INTO task_links (source_task_id, target_task_id)
-            VALUES (?, ?)
+            INSERT OR IGNORE INTO task_links (from_task_id, to_task_id, type, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (source_task_id, target_task_id),
+            (source_task_id, target_task_id, "depends_on", now, now),
         )
     return cursor.rowcount > 0
 
@@ -426,7 +430,7 @@ def create_task_link(
 def delete_task_link(db_path: Path, source_task_id: int, target_task_id: int) -> bool:
     with get_conn(db_path) as conn:
         cursor = conn.execute(
-            "DELETE FROM task_links WHERE source_task_id = ? AND target_task_id = ?",
+            "DELETE FROM task_links WHERE from_task_id = ? AND to_task_id = ?",
             (source_task_id, target_task_id),
         )
     return cursor.rowcount > 0

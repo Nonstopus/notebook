@@ -266,3 +266,22 @@ def test_delete_task_link_returns_false_for_missing_link(tmp_path):
     second = storage.create_task(db_path, "B")
 
     assert storage.delete_task_link(db_path, first.id, second.id) is False
+
+
+def test_task_links_schema_and_metadata(tmp_path):
+    db_path = temp_db(tmp_path)
+    first = storage.create_task(db_path, "A")
+    second = storage.create_task(db_path, "B")
+
+    assert storage.create_task_link(db_path, first.id, second.id) is True
+
+    with storage.get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT from_task_id, to_task_id, type, created_at, updated_at FROM task_links"
+        ).fetchone()
+
+    assert row["from_task_id"] == first.id
+    assert row["to_task_id"] == second.id
+    assert row["type"] == "depends_on"
+    assert row["created_at"]
+    assert row["updated_at"]

@@ -26,7 +26,13 @@ class TaskApp:
         self._schedule_reminder_check()
 
     def _build_ui(self) -> None:
-        entry_frame = tk.Frame(self.root)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        list_tab = ttk.Frame(self.notebook)
+        self.notebook.add(list_tab, text="Список")
+
+        entry_frame = tk.Frame(list_tab)
         entry_frame.pack(fill=tk.X, padx=10, pady=5)
 
         self.task_entry = tk.Entry(entry_frame)
@@ -36,15 +42,19 @@ class TaskApp:
         add_btn = tk.Button(entry_frame, text="Добавить", command=self.add_task)
         add_btn.pack(side=tk.LEFT, padx=(5, 0))
 
-        self.tasks_listbox = tk.Listbox(self.root)
+        self.tasks_listbox = tk.Listbox(list_tab)
         self.tasks_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        btn_frame = tk.Frame(self.root)
+        btn_frame = tk.Frame(list_tab)
         btn_frame.pack(fill=tk.X, padx=10, pady=5)
         tk.Button(btn_frame, text="Открыть", command=self.open_task).pack(side=tk.LEFT)
         tk.Button(btn_frame, text="Готово/Не готово", command=self.toggle_task).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Удалить", command=self.delete_task).pack(side=tk.LEFT)
-        tk.Button(btn_frame, text="План", command=self.open_plan).pack(side=tk.RIGHT)
+
+        plan_tab = ttk.Frame(self.notebook)
+        self.notebook.add(plan_tab, text="План")
+        self.plan_view = PlanWindow(self, parent=plan_tab)
+        self.notebook.bind("<<NotebookTabChanged>>", lambda _event: self.plan_view.refresh_canvas())
 
     def refresh_tasks(self) -> None:
         self.tasks_listbox.delete(0, tk.END)
@@ -102,7 +112,8 @@ class TaskApp:
         TaskDetail(self, task)
 
     def open_plan(self) -> None:
-        PlanWindow(self)
+        self.notebook.select(1)
+        self.plan_view.refresh_canvas()
 
     def _schedule_reminder_check(self) -> None:
         self.root.after(10_000, self._check_reminders)
@@ -286,10 +297,16 @@ class PlanWindow:
     NODE_WIDTH = 180
     NODE_HEIGHT = 70
 
-    def __init__(self, app: TaskApp):
+    def __init__(self, app: TaskApp, parent: Optional[tk.Widget] = None):
         self.app = app
-        self.window = tk.Toplevel(app.root)
-        self.window.title("План")
+        self.window = tk.Frame(parent if parent is not None else app.root)
+        if parent is None:
+            toplevel = tk.Toplevel(app.root)
+            toplevel.title("План")
+            self.window = tk.Frame(toplevel)
+            self.window.pack(fill=tk.BOTH, expand=True)
+        else:
+            self.window.pack(fill=tk.BOTH, expand=True)
         self._drag_task_id: Optional[int] = None
         self._drag_offset: Tuple[float, float] = (0.0, 0.0)
         self._highlighted_nodes: Set[int] = set()
