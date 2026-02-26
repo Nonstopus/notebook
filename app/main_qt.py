@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -11,7 +11,7 @@ from .services import tasks as task_service
 from .storage import DB_NAME
 
 try:
-    from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+    from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
     from PySide6.QtGui import QBrush, QColor, QPainter, QPen
     from PySide6.QtWidgets import (
         QApplication,
@@ -61,6 +61,24 @@ ROLE_BADGES = Qt.ItemDataRole.UserRole + 3
 ROLE_DEADLINE = Qt.ItemDataRole.UserRole + 4
 ROLE_SUBTASKS = Qt.ItemDataRole.UserRole + 5
 ROLE_DONE = Qt.ItemDataRole.UserRole + 6
+ROLE_PRIORITY = Qt.ItemDataRole.UserRole + 7
+ROLE_DEADLINE_COLOR = Qt.ItemDataRole.UserRole + 8
+
+TOKENS = {
+    "colors": {
+        "bg": "#FFFFFF",
+        "bg_subtle": "#F7F9FC",
+        "border": "#D2DCE8",
+        "text_primary": "#1F2933",
+        "text_secondary": "#5D6A79",
+        "text_meta": "#7A8798",
+        "progress_bg": "#DCE3EA",
+        "progress_fill": "#4E8F75",
+        "danger": "#BE2D2D",
+        "focus": "#364B63",
+    },
+    "radii": {"card": 10, "chip": 8},
+}
 
 SELECTED_BG_COLOR = "#E8EDF3"
 SELECTED_BORDER_COLOR = "#5A6B7D"
@@ -108,10 +126,10 @@ class TaskCardDelegate(QStyledItemDelegate):
         hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
         focused = bool(option.state & QStyle.StateFlag.State_HasFocus)
 
-        background = QColor("#FFFFFF")
-        border = QColor("#D2DCE8")
+        background = QColor(TOKENS["colors"]["bg"])
+        border = QColor(TOKENS["colors"]["border"])
         if hovered:
-            background = QColor("#F7F9FC")
+            background = QColor(TOKENS["colors"]["bg_subtle"])
             border = QColor("#AAB9CA")
         if selected:
             background = QColor(SELECTED_BG_COLOR)
@@ -119,14 +137,14 @@ class TaskCardDelegate(QStyledItemDelegate):
 
         painter.setBrush(background)
         painter.setPen(QPen(border, 1.4))
-        painter.drawRoundedRect(card_rect, 8, 8)
+        painter.drawRoundedRect(card_rect, TOKENS["radii"]["card"], TOKENS["radii"]["card"])
         if focused:
-            painter.setPen(QPen(QColor("#364B63"), 1.2, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor(TOKENS["colors"]["focus"]), 1.2, Qt.PenStyle.DashLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(card_rect.adjusted(2, 2, -2, -2), 6, 6)
 
-        text_color = QColor(SELECTED_TEXT_COLOR if selected else "#1F2933")
-        meta_color = QColor("#2B3A48" if selected else "#5D6A79")
+        text_color = QColor(SELECTED_TEXT_COLOR if selected else TOKENS["colors"]["text_primary"])
+        meta_color = QColor("#2B3A48" if selected else TOKENS["colors"]["text_secondary"])
         left = card_rect.left() + 12
         top = card_rect.top() + 10
 
@@ -148,11 +166,11 @@ class TaskCardDelegate(QStyledItemDelegate):
         painter.drawText(QRectF(left + 16, top + 17, card_rect.width() - 40, 18), index.data(ROLE_META) or "")
 
         progress = int(index.data(ROLE_PROGRESS) or 0)
-        progress_rect = QRectF(left + 16, top + 40, card_rect.width() - 52, 8)
+        progress_rect = QRectF(left + 16, top + 40, card_rect.width() - 140, 8)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#DCE3EA"))
+        painter.setBrush(QColor(TOKENS["colors"]["progress_bg"]))
         painter.drawRoundedRect(progress_rect, 4, 4)
-        painter.setBrush(QColor("#4E8F75"))
+        painter.setBrush(QColor(TOKENS["colors"]["progress_fill"]))
         painter.drawRoundedRect(
             QRectF(progress_rect.left(), progress_rect.top(), progress_rect.width() * progress / 100.0, progress_rect.height()),
             4,
@@ -160,17 +178,20 @@ class TaskCardDelegate(QStyledItemDelegate):
         )
 
         sections = [
-            ("Статус", "Готово" if done else "В работе"),
             ("Срок", index.data(ROLE_DEADLINE) or "—"),
             ("Подзадачи", str(index.data(ROLE_SUBTASKS) or 0)),
+            ("Приоритет", index.data(ROLE_PRIORITY) or "Обычный"),
         ]
         x_cursor = left + 16
         for section_index, (label, value) in enumerate(sections):
             painter.setPen(meta_color)
             painter.drawText(QRectF(x_cursor, top + 54, 65, 16), label)
-            painter.setPen(text_color)
+            if label == "Срок":
+                painter.setPen(QColor(index.data(ROLE_DEADLINE_COLOR) or text_color.name()))
+            else:
+                painter.setPen(text_color)
             painter.drawText(QRectF(x_cursor + 54, top + 54, 90, 16), value)
-            x_cursor += 132
+            x_cursor += 120
             if section_index < len(sections) - 1:
                 painter.setPen(QPen(QColor("#C7D2DF"), 1))
                 painter.drawLine(int(x_cursor - 10), int(top + 52), int(x_cursor - 10), int(top + 68))
@@ -181,11 +202,65 @@ class TaskCardDelegate(QStyledItemDelegate):
             badge_rect = QRectF(badge_x - badge_width, top + 1, badge_width, 18)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(color))
-            painter.drawRoundedRect(badge_rect, 8, 8)
+            painter.drawRoundedRect(badge_rect, TOKENS["radii"]["chip"], TOKENS["radii"]["chip"])
             painter.setPen(QColor("#FFFFFF"))
             painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, text)
             badge_x -= badge_width + 6
+
+        if hovered:
+            action_bg = QColor("#E2E9F2")
+            action_fg = QColor("#243447")
+            quick_actions = ["✓", "✎", "🗑"]
+            action_x = card_rect.right() - 104
+            for glyph in quick_actions:
+                quick_rect = QRectF(action_x, top + 34, 28, 20)
+                painter.setBrush(action_bg)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(quick_rect, 6, 6)
+                painter.setPen(action_fg)
+                painter.drawText(quick_rect, Qt.AlignmentFlag.AlignCenter, glyph)
+                action_x += 32
         painter.restore()
+
+
+class TaskTreeWidget(QTreeWidget):
+    quick_action_requested = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._hover_item: Optional[QTreeWidgetItem] = None
+
+    def _action_regions(self, item: QTreeWidgetItem) -> Dict[str, QRectF]:
+        rect = self.visualItemRect(item).adjusted(8, 6, -8, -6)
+        y = rect.top() + 34
+        return {
+            "done": QRectF(rect.right() - 104, y, 28, 20),
+            "edit": QRectF(rect.right() - 72, y, 28, 20),
+            "delete": QRectF(rect.right() - 40, y, 28, 20),
+        }
+
+    def mouseMoveEvent(self, event) -> None:
+        item = self.itemAt(event.pos())
+        if item is not self._hover_item:
+            self._hover_item = item
+            self.viewport().update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover_item = None
+        self.viewport().update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        item = self.itemAt(event.pos())
+        if item is not None:
+            point = QPointF(event.pos())
+            for action, rect in self._action_regions(item).items():
+                if rect.contains(point):
+                    self.setCurrentItem(item)
+                    self.quick_action_requested.emit(action)
+                    return
+        super().mousePressEvent(event)
 
 
 class GraphEdgeItem(QGraphicsLineItem):
@@ -523,6 +598,7 @@ class TaskQtWindow(QMainWindow):
         self.db_path = db_path
         self._tasks_cache = []
         self._tasks_by_id: Dict[int, object] = {}
+        self._is_refreshing_tree = False
         task_service.init_db(self.db_path)
 
         self.setWindowTitle("Task Tracker Desktop (Qt)")
@@ -588,18 +664,30 @@ class TaskQtWindow(QMainWindow):
         left_panel = QWidget(self)
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(QLabel("Задачи и подзадачи", self))
-        self.tasks_list = QTreeWidget(self)
+        self.tasks_list = TaskTreeWidget(self)
         self.tasks_list.setHeaderHidden(True)
         self.tasks_list.setColumnCount(1)
         self.tasks_list.itemSelectionChanged.connect(self.on_selection_changed)
+        self.tasks_list.itemChanged.connect(self._on_tree_item_changed)
         self.tasks_list.itemActivated.connect(self._open_selected_item_card)
+        self.tasks_list.quick_action_requested.connect(self._handle_quick_action)
         self.tasks_list.setMouseTracking(True)
+        self.tasks_list.setAllColumnsShowFocus(True)
         self.tasks_list.setIndentation(26)
         self.tasks_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tasks_list.customContextMenuRequested.connect(self._show_task_context_menu)
         self.task_delegate = TaskCardDelegate(self.tasks_list)
         self.tasks_list.setItemDelegate(self.task_delegate)
         left_layout.addWidget(self.tasks_list)
+
+        self.empty_state_label = QLabel(self)
+        self.empty_state_label.setWordWrap(True)
+        self.empty_state_label.setText(
+            "Пока нет задач. Нажмите «Новая задача», чтобы создать первую карточку.\n"
+            "Подсказка: для быстрого редактирования используйте двойной клик по заголовку."
+        )
+        self.empty_state_label.hide()
+        left_layout.addWidget(self.empty_state_label)
 
         left_actions = QHBoxLayout()
         add_btn = QPushButton("Новая задача", self)
@@ -640,6 +728,10 @@ class TaskQtWindow(QMainWindow):
 
         self.status_checkbox = QCheckBox("Задача выполнена", self)
         form.addRow("Статус", self.status_checkbox)
+
+        self.priority_input = QComboBox(self)
+        self.priority_input.addItems(["Низкий", "Средний", "Высокий", "Критичный"])
+        form.addRow("Приоритет", self.priority_input)
 
         self.reminder_input = QDateTimeEdit(self)
         self.reminder_input.setCalendarPopup(True)
@@ -697,6 +789,7 @@ class TaskQtWindow(QMainWindow):
         self.refresh_tasks()
 
     def refresh_tasks(self) -> None:
+        self._is_refreshing_tree = True
         selected_ref = self._selected_item_ref()
         query = self.search_input.text().strip() if hasattr(self, "search_input") else ""
         status_value = self.status_filter.currentText() if hasattr(self, "status_filter") else "Все"
@@ -738,10 +831,21 @@ class TaskQtWindow(QMainWindow):
         self._tasks_by_id = {task.id: task for task in self._tasks_cache}
 
         self.tasks_list.clear()
+        now = datetime.now()
         for task in self._tasks_cache:
             done_subtasks, total_subtasks = progress_map[task.id]
             percent = int((done_subtasks / total_subtasks) * 100) if total_subtasks else 0
-            deadline = task.reminder_datetime.strftime("%d.%m %H:%M") if task.reminder_datetime else "—"
+            due_value = task.due_datetime or task.reminder_datetime
+            deadline = "—"
+            deadline_color = TOKENS["colors"]["text_primary"]
+            if due_value:
+                if not task.is_done and due_value < now:
+                    overdue_days = max(1, (now - due_value).days + 1)
+                    deadline = f"Просрочено {overdue_days}д"
+                    deadline_color = TOKENS["colors"]["danger"]
+                else:
+                    deadline = due_value.strftime("%d.%m %H:%M")
+            priority_label = "Высокий" if deadline.startswith("Просрочено") else ("Средний" if due_value else "Низкий")
             meta = f"ID #{task.id} · {done_subtasks}/{total_subtasks} выполнено"
 
             root_item = QTreeWidgetItem([task.title])
@@ -749,8 +853,11 @@ class TaskQtWindow(QMainWindow):
             root_item.setData(0, ROLE_META, meta)
             root_item.setData(0, ROLE_PROGRESS, percent)
             root_item.setData(0, ROLE_DEADLINE, deadline)
+            root_item.setData(0, ROLE_DEADLINE_COLOR, deadline_color)
             root_item.setData(0, ROLE_SUBTASKS, total_subtasks)
             root_item.setData(0, ROLE_DONE, task.is_done)
+            root_item.setData(0, ROLE_PRIORITY, priority_label)
+            root_item.setFlags(root_item.flags() | Qt.ItemFlag.ItemIsEditable)
 
             badges = []
             if total_subtasks:
@@ -772,7 +879,10 @@ class TaskQtWindow(QMainWindow):
                 child.setData(0, ROLE_DEADLINE, child_deadline.strftime("%d.%m %H:%M") if child_deadline else "—")
                 child.setData(0, ROLE_SUBTASKS, 0)
                 child.setData(0, ROLE_DONE, subtask.is_done)
+                child.setData(0, ROLE_PRIORITY, "Низкий")
+                child.setData(0, ROLE_DEADLINE_COLOR, TOKENS["colors"]["text_primary"])
                 child.setData(0, ROLE_BADGES, [("SUB", "#6A7A8D")])
+                child.setFlags(child.flags() | Qt.ItemFlag.ItemIsEditable)
                 root_item.addChild(child)
 
         self.tasks_list.expandAll()
@@ -782,6 +892,22 @@ class TaskQtWindow(QMainWindow):
             self.tasks_list.setCurrentItem(self.tasks_list.topLevelItem(0))
         else:
             self._clear_card()
+        self._is_refreshing_tree = False
+        self._update_empty_state(query)
+
+    def _update_empty_state(self, query: str) -> None:
+        empty = self.tasks_list.topLevelItemCount() == 0
+        if not empty:
+            self.empty_state_label.hide()
+            return
+        if query:
+            self.empty_state_label.setText("По запросу ничего не найдено. Попробуйте изменить фильтр или строку поиска.")
+        else:
+            self.empty_state_label.setText(
+                "Пока нет задач. Нажмите «Новая задача», чтобы создать первую карточку.\n"
+                "Подсказка: Tab/Shift+Tab и стрелки работают для навигации по списку."
+            )
+        self.empty_state_label.show()
 
     def _selected_item_ref(self) -> Optional[TreeItemRef]:
         item = self.tasks_list.currentItem()
@@ -858,6 +984,7 @@ class TaskQtWindow(QMainWindow):
         self.status_checkbox.setChecked(False)
         self.reminder_input.setDateTime(datetime.now())
         self.note_input.setPlainText("")
+        self.priority_input.setCurrentText("Средний")
 
     def _open_selected_item_card(self) -> None:
         self.on_selection_changed()
@@ -880,6 +1007,7 @@ class TaskQtWindow(QMainWindow):
             self.status_checkbox.setChecked(subtask.is_done)
             self.note_input.setPlainText(subtask.note or "")
             self.reminder_input.setDateTime(subtask.reminder_datetime or datetime.now())
+            self.priority_input.setCurrentText("Низкий")
             return
 
         task = self._selected_task()
@@ -892,6 +1020,35 @@ class TaskQtWindow(QMainWindow):
         self.status_checkbox.setChecked(task.is_done)
         self.note_input.setPlainText(task.note or "")
         self.reminder_input.setDateTime(task.reminder_datetime or datetime.now())
+        self.priority_input.setCurrentText(self.tasks_list.currentItem().data(0, ROLE_PRIORITY) or "Средний")
+
+    def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._is_refreshing_tree or column != 0:
+            return
+        item_ref = item.data(0, ROLE_ITEM_REF)
+        if not isinstance(item_ref, TreeItemRef):
+            return
+        new_title = item.text(0).strip().replace("↳ ", "")
+        if not new_title:
+            return
+        if item_ref.kind == ItemKind.SUBTASK:
+            task_service.update_subtask(self.db_path, item_ref.id, title=new_title)
+            self.refresh_tasks()
+            self._focus_subtask_in_tree(item_ref.parent_task_id or 0, item_ref.id)
+            return
+        task_service.update_task(self.db_path, item_ref.id, title=new_title)
+        self.refresh_tasks()
+        self._select_task_in_tree(item_ref.id)
+
+    def _handle_quick_action(self, action: str) -> None:
+        if action == "done":
+            self.mark_selected_done()
+        elif action == "delete":
+            self.delete_task()
+        elif action == "edit":
+            item = self.tasks_list.currentItem()
+            if item:
+                self.tasks_list.editItem(item, 0)
 
     def add_task(self) -> None:
         title, ok = QInputDialog.getText(self, "Новая задача", "Введите название задачи")
