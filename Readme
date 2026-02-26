@@ -85,6 +85,11 @@ pytest tests/test_no_tkinter_imports.py
 - CLI: `pytest tests/test_cli.py tests/test_integration_flows.py`
 - Qt smoke: `pytest tests/test_qt_smoke.py`
 
+- Visual golden-checks карточки задач: `pytest tests/test_qt_card_golden.py`
+  - Генерирует актуальные PNG-артефакты в `tests/artifacts/task_card/`.
+  - Сравнивает их с эталонами из `tests/golden/task_card/`.
+  - Для целенаправленного обновления эталонов используйте `UPDATE_QT_GOLDENS=1 pytest tests/test_qt_card_golden.py`.
+
 ## Структура
 - `app/storage.py` — функции работы с SQLite (задачи, подзадачи, напоминания).
 - `app/main_qt.py` — основной Qt-интерфейс (единственная GUI-точка входа).
