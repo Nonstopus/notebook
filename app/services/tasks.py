@@ -278,5 +278,9 @@ def move_board_item(db_path: Path, board_id: int, task_id: int, column_id: int, 
     return storage.move_board_item(db_path, board_id, task_id, column_id, position)
 
 
+def move_board_item_by_id(db_path: Path, board_item_id: int, column_id: int, position: int) -> BoardItem:
+    return storage.move_board_item_by_id(db_path, board_item_id, column_id, position)
+
+
 def ensure_board_item(db_path: Path, board_id: int, task_id: int) -> Optional[BoardItem]:
     return storage.ensure_board_item(db_path, board_id, task_id)

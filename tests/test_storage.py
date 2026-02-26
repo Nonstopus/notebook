@@ -421,6 +421,58 @@ def test_board_column_reorder_and_move_items(tmp_path):
     assert [col.id for col in reordered] == [done.id, todo.id, doing.id]
 
 
+def test_move_board_item_by_id_reorders_inside_same_column(tmp_path):
+    db_path = temp_db(tmp_path)
+    board = storage.create_board(db_path, "Flow", ["Todo", "Doing"])
+    todo = storage.list_board_columns(db_path, board.id)[0]
+
+    task_a = storage.create_task(db_path, "A")
+    task_b = storage.create_task(db_path, "B")
+    task_c = storage.create_task(db_path, "C")
+
+    item_a = storage.move_board_item(db_path, board.id, task_a.id, todo.id, 0)
+    item_b = storage.move_board_item(db_path, board.id, task_b.id, todo.id, 1)
+    item_c = storage.move_board_item(db_path, board.id, task_c.id, todo.id, 2)
+
+    moved = storage.move_board_item_by_id(db_path, item_c.id, todo.id, 1)
+    assert moved.id == item_c.id
+
+    items = storage.list_board_items(db_path, board.id)
+    ordered = [item.task_id for item in items if item.column_id == todo.id]
+    assert ordered == [task_a.id, task_c.id, task_b.id]
+    positions = [item.position for item in items if item.column_id == todo.id]
+    assert positions == [0, 1, 2]
+
+
+def test_move_board_item_by_id_between_columns_and_fix_neighbors(tmp_path):
+    db_path = temp_db(tmp_path)
+    board = storage.create_board(db_path, "Flow", ["Todo", "Doing", "Done"])
+    todo, doing, _ = storage.list_board_columns(db_path, board.id)
+
+    task_a = storage.create_task(db_path, "A")
+    task_b = storage.create_task(db_path, "B")
+    task_c = storage.create_task(db_path, "C")
+    task_d = storage.create_task(db_path, "D")
+
+    item_a = storage.move_board_item(db_path, board.id, task_a.id, todo.id, 0)
+    item_b = storage.move_board_item(db_path, board.id, task_b.id, todo.id, 1)
+    storage.move_board_item(db_path, board.id, task_c.id, doing.id, 0)
+    storage.move_board_item(db_path, board.id, task_d.id, doing.id, 1)
+
+    moved = storage.move_board_item_by_id(db_path, item_b.id, doing.id, 1)
+    assert moved.column_id == doing.id
+    assert moved.position == 1
+
+    items = storage.list_board_items(db_path, board.id)
+    todo_items = [item for item in items if item.column_id == todo.id]
+    doing_items = [item for item in items if item.column_id == doing.id]
+
+    assert [item.task_id for item in todo_items] == [task_a.id]
+    assert [item.position for item in todo_items] == [0]
+    assert [item.task_id for item in doing_items] == [task_c.id, task_b.id, task_d.id]
+    assert [item.position for item in doing_items] == [0, 1, 2]
+
+
 def test_board_validation_position_and_board_isolation(tmp_path):
     db_path = temp_db(tmp_path)
     board_a = storage.create_board(db_path, "A", ["Todo", "Done"])
