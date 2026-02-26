@@ -703,12 +703,20 @@ class TaskQtWindow(QMainWindow):
         self.refresh_tasks()
 
     def convert_task_to_subtask(self) -> None:
+        if self._selected_subtask_id() is not None:
+            QMessageBox.information(
+                self,
+                "Выберите задачу",
+                "Преобразовывать можно только задачи верхнего уровня",
+            )
+            return
+
         child_task = self._selected_task()
         if child_task is None:
             QMessageBox.information(self, "Выберите задачу", "Выберите задачу для преобразования")
             return
 
-        parent_options = [task for task in self._tasks_cache if task.id != child_task.id]
+        parent_options = [task for task in task_service.list_tasks(self.db_path) if task.id != child_task.id]
         if not parent_options:
             QMessageBox.information(
                 self,
@@ -719,6 +727,14 @@ class TaskQtWindow(QMainWindow):
 
         dialog = TaskPickerDialog(parent_options, self)
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.selected_task_id is None:
+            return
+
+        if dialog.selected_task_id == child_task.id:
+            QMessageBox.warning(self, "Ошибка преобразования", "Нельзя сделать задачу подзадачей самой себя")
+            return
+
+        if not task_service.get_task(self.db_path, dialog.selected_task_id):
+            QMessageBox.warning(self, "Ошибка преобразования", "Родительская задача не найдена")
             return
 
         try:
