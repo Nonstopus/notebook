@@ -11,7 +11,7 @@ try:
 except ImportError as exc:  # pragma: no cover - environment guard
     pytest.skip(f"PySide6 runtime unavailable: {exc}", allow_module_level=True)
 
-from app.main_qt import TaskQtWindow
+from app.main_qt import ROLE_BADGES, ROLE_PROGRESS, ROLE_SUBTASKS, SELECTED_TEXT_CONTRAST, TaskQtWindow
 from app.services import tasks
 
 
@@ -78,7 +78,8 @@ def test_convert_task_to_subtask_refreshes_list(app_instance, tmp_path, monkeypa
 
     titles = [task.title for task in window._tasks_cache]
     assert titles == ["Родитель"]
-    assert window.tasks_list.topLevelItem(0).text(1) == "0/1 (0%) · подзадач: 1"
+    assert window.tasks_list.topLevelItem(0).data(0, ROLE_PROGRESS) == 0
+    assert window.tasks_list.topLevelItem(0).data(0, ROLE_SUBTASKS) == 1
 
     window.close()
 
@@ -107,8 +108,8 @@ def test_qt_filters_by_status_and_subtasks(app_instance, tmp_path):
     visible_titles = [task.title for task in window._tasks_cache]
     assert visible_titles == ["С подзадачами"]
 
-    row_title = window.tasks_list.topLevelItem(0).text(0)
-    assert "🧩" in row_title
+    badges = window.tasks_list.topLevelItem(0).data(0, ROLE_BADGES)
+    assert any(badge[0] == "🧩" for badge in badges)
 
     window.close()
 
@@ -126,3 +127,21 @@ def test_qt_main_entrypoint_smoke(monkeypatch, app_instance, tmp_path):
     result = main_qt.main()
 
     assert result == 0
+
+
+def test_qt_selected_row_text_contrast_smoke(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt.db")
+    tasks.create_task(db_path, "Контраст")
+
+    window = TaskQtWindow(db_path)
+    window.show()
+    app_instance.processEvents()
+
+    assert window.tasks_list.styleSheet()
+    assert SELECTED_TEXT_CONTRAST >= 4.5
+
+    window.tasks_list.setCurrentItem(window.tasks_list.topLevelItem(0))
+    app_instance.processEvents()
+    assert window.tasks_list.currentItem() is not None
+
+    window.close()

@@ -10,8 +10,8 @@ from .services import tasks as task_service
 from .storage import DB_NAME
 
 try:
-    from PySide6.QtCore import QPointF, Qt
-    from PySide6.QtGui import QBrush, QPainter, QPen
+    from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+    from PySide6.QtGui import QBrush, QColor, QPainter, QPen
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -36,6 +36,8 @@ try:
         QPlainTextEdit,
         QPushButton,
         QSplitter,
+        QStyledItemDelegate,
+        QStyle,
         QTreeWidget,
         QTreeWidgetItem,
         QVBoxLayout,
@@ -50,6 +52,137 @@ except ImportError as exc:  # pragma: no cover - runtime guard for optional GUI 
 DB_PATH = Path(DB_NAME)
 NODE_WIDTH = 180
 NODE_HEIGHT = 70
+ROLE_META = Qt.ItemDataRole.UserRole + 1
+ROLE_PROGRESS = Qt.ItemDataRole.UserRole + 2
+ROLE_BADGES = Qt.ItemDataRole.UserRole + 3
+ROLE_DEADLINE = Qt.ItemDataRole.UserRole + 4
+ROLE_SUBTASKS = Qt.ItemDataRole.UserRole + 5
+ROLE_DONE = Qt.ItemDataRole.UserRole + 6
+
+SELECTED_BG_COLOR = "#E8EDF3"
+SELECTED_BORDER_COLOR = "#5A6B7D"
+SELECTED_TEXT_COLOR = "#1C232B"
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    def _hex_to_luminance(value: str) -> float:
+        raw = value.lstrip("#")
+        rgb = [int(raw[index : index + 2], 16) / 255.0 for index in (0, 2, 4)]
+        channels = [
+            channel / 12.92 if channel <= 0.03928 else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in rgb
+        ]
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+    fg = _hex_to_luminance(foreground)
+    bg = _hex_to_luminance(background)
+    lighter = max(fg, bg)
+    darker = min(fg, bg)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+SELECTED_TEXT_CONTRAST = contrast_ratio(SELECTED_TEXT_COLOR, SELECTED_BG_COLOR)
+
+
+class TaskCardDelegate(QStyledItemDelegate):
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._density = "comfortable"
+
+    def set_density(self, density: str) -> None:
+        self._density = density
+
+    def sizeHint(self, option, index):
+        base_height = 76 if self._density == "compact" else 96
+        return QSize(option.rect.width(), base_height)
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        card_rect = option.rect.adjusted(8, 6, -8, -6)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        focused = bool(option.state & QStyle.StateFlag.State_HasFocus)
+
+        background = QColor("#FFFFFF")
+        border = QColor("#D2DCE8")
+        if hovered:
+            background = QColor("#F7F9FC")
+            border = QColor("#AAB9CA")
+        if selected:
+            background = QColor(SELECTED_BG_COLOR)
+            border = QColor(SELECTED_BORDER_COLOR)
+
+        painter.setBrush(background)
+        painter.setPen(QPen(border, 1.4))
+        painter.drawRoundedRect(card_rect, 8, 8)
+        if focused:
+            painter.setPen(QPen(QColor("#364B63"), 1.2, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(card_rect.adjusted(2, 2, -2, -2), 6, 6)
+
+        text_color = QColor(SELECTED_TEXT_COLOR if selected else "#1F2933")
+        meta_color = QColor("#2B3A48" if selected else "#5D6A79")
+        left = card_rect.left() + 12
+        top = card_rect.top() + 10
+
+        done = bool(index.data(ROLE_DONE))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#2D9D5B" if done else "#D98B2B"))
+        painter.drawEllipse(QRectF(left, top + 2, 10, 10))
+
+        title_font = painter.font()
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        painter.setPen(text_color)
+        painter.drawText(QRectF(left + 16, top - 1, card_rect.width() - 40, 22), index.data(Qt.ItemDataRole.DisplayRole) or "")
+
+        meta_font = painter.font()
+        meta_font.setBold(False)
+        painter.setFont(meta_font)
+        painter.setPen(meta_color)
+        painter.drawText(QRectF(left + 16, top + 17, card_rect.width() - 40, 18), index.data(ROLE_META) or "")
+
+        progress = int(index.data(ROLE_PROGRESS) or 0)
+        progress_rect = QRectF(left + 16, top + 40, card_rect.width() - 52, 8)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#DCE3EA"))
+        painter.drawRoundedRect(progress_rect, 4, 4)
+        painter.setBrush(QColor("#4E8F75"))
+        painter.drawRoundedRect(
+            QRectF(progress_rect.left(), progress_rect.top(), progress_rect.width() * progress / 100.0, progress_rect.height()),
+            4,
+            4,
+        )
+
+        sections = [
+            ("Статус", "Готово" if done else "В работе"),
+            ("Срок", index.data(ROLE_DEADLINE) or "—"),
+            ("Подзадачи", str(index.data(ROLE_SUBTASKS) or 0)),
+        ]
+        x_cursor = left + 16
+        for section_index, (label, value) in enumerate(sections):
+            painter.setPen(meta_color)
+            painter.drawText(QRectF(x_cursor, top + 54, 65, 16), label)
+            painter.setPen(text_color)
+            painter.drawText(QRectF(x_cursor + 54, top + 54, 90, 16), value)
+            x_cursor += 132
+            if section_index < len(sections) - 1:
+                painter.setPen(QPen(QColor("#C7D2DF"), 1))
+                painter.drawLine(int(x_cursor - 10), int(top + 52), int(x_cursor - 10), int(top + 68))
+
+        badge_x = card_rect.right() - 12
+        for text, color in reversed(index.data(ROLE_BADGES) or []):
+            badge_width = max(40, len(text) * 7 + 14)
+            badge_rect = QRectF(badge_x - badge_width, top + 1, badge_width, 18)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawRoundedRect(badge_rect, 8, 8)
+            painter.setPen(QColor("#FFFFFF"))
+            painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, text)
+            badge_x -= badge_width + 6
+        painter.restore()
 
 
 class GraphEdgeItem(QGraphicsLineItem):
@@ -349,6 +482,13 @@ class TaskQtWindow(QMainWindow):
         )
         self.sort_mode.currentIndexChanged.connect(self.refresh_tasks)
         search_row.addWidget(self.sort_mode)
+
+        search_row.addWidget(QLabel("Плотность", self))
+        self.density_mode = QComboBox(self)
+        self.density_mode.addItems(["Compact", "Comfortable"])
+        self.density_mode.setCurrentText("Comfortable")
+        self.density_mode.currentIndexChanged.connect(self._apply_density)
+        search_row.addWidget(self.density_mode)
         root.addLayout(search_row)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -357,11 +497,15 @@ class TaskQtWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(QLabel("Задачи и подзадачи", self))
         self.tasks_list = QTreeWidget(self)
-        self.tasks_list.setHeaderLabels(["Задача", "Прогресс"])
+        self.tasks_list.setHeaderHidden(True)
+        self.tasks_list.setColumnCount(1)
         self.tasks_list.itemSelectionChanged.connect(self.on_selection_changed)
-        self.tasks_list.setAlternatingRowColors(True)
+        self.tasks_list.setMouseTracking(True)
+        self.tasks_list.setIndentation(26)
         self.tasks_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tasks_list.customContextMenuRequested.connect(self._show_task_context_menu)
+        self.task_delegate = TaskCardDelegate(self.tasks_list)
+        self.tasks_list.setItemDelegate(self.task_delegate)
         left_layout.addWidget(self.tasks_list)
 
         left_actions = QHBoxLayout()
@@ -436,6 +580,19 @@ class TaskQtWindow(QMainWindow):
         root.addWidget(splitter)
 
         self.setCentralWidget(central)
+        self._apply_styles()
+        self._apply_density()
+
+    def _apply_styles(self) -> None:
+        qss_path = Path(__file__).with_name("styles").joinpath("task_list.qss")
+        if qss_path.exists():
+            self.tasks_list.setStyleSheet(qss_path.read_text(encoding="utf-8"))
+
+    def _apply_density(self) -> None:
+        density = "compact" if self.density_mode.currentText().lower().startswith("compact") else "comfortable"
+        self.task_delegate.set_density(density)
+        self.tasks_list.doItemsLayout()
+        self.tasks_list.viewport().update()
 
     def clear_search(self) -> None:
         self.search_input.setText("")
@@ -489,19 +646,37 @@ class TaskQtWindow(QMainWindow):
         for task in self._tasks_cache:
             done_subtasks, total_subtasks = progress_map[task.id]
             percent = int((done_subtasks / total_subtasks) * 100) if total_subtasks else 0
-            reminder_flag = "⏰ " if task.reminder_datetime else ""
-            subtask_badge = "🧩 " if total_subtasks else ""
-            text = f"[{'✓' if task.is_done else ' '}] {subtask_badge}{reminder_flag}{task.title}"
-            progress = f"{done_subtasks}/{total_subtasks} ({percent}%) · подзадач: {total_subtasks}"
-            root_item = QTreeWidgetItem([text, progress])
+            deadline = task.reminder_datetime.strftime("%d.%m %H:%M") if task.reminder_datetime else "—"
+            meta = f"ID #{task.id} · {done_subtasks}/{total_subtasks} выполнено"
+
+            root_item = QTreeWidgetItem([task.title])
             root_item.setData(0, Qt.ItemDataRole.UserRole, task.id)
+            root_item.setData(0, ROLE_META, meta)
+            root_item.setData(0, ROLE_PROGRESS, percent)
+            root_item.setData(0, ROLE_DEADLINE, deadline)
+            root_item.setData(0, ROLE_SUBTASKS, total_subtasks)
+            root_item.setData(0, ROLE_DONE, task.is_done)
+
+            badges = []
+            if total_subtasks:
+                badges.append(("🧩", "#607D8B"))
+            if task.reminder_datetime:
+                badges.append(("⏰", "#D17C3F"))
+            if task.is_done:
+                badges.append(("DONE", "#2D9D5B"))
+            root_item.setData(0, ROLE_BADGES, badges)
             self.tasks_list.addTopLevelItem(root_item)
 
             subtasks = task_service.list_subtasks(self.db_path, task.id)
             for subtask in subtasks:
-                st_text = f"↳ [{'✓' if subtask.is_done else ' '}] {subtask.title}"
-                child = QTreeWidgetItem([st_text, "выполнена" if subtask.is_done else "активна"])
+                child = QTreeWidgetItem([f"↳ {subtask.title}"])
                 child.setData(0, Qt.ItemDataRole.UserRole, ("subtask", subtask.id))
+                child.setData(0, ROLE_META, f"Подзадача #{subtask.id}")
+                child.setData(0, ROLE_PROGRESS, 100 if subtask.is_done else 0)
+                child.setData(0, ROLE_DEADLINE, "—")
+                child.setData(0, ROLE_SUBTASKS, 0)
+                child.setData(0, ROLE_DONE, subtask.is_done)
+                child.setData(0, ROLE_BADGES, [("SUB", "#6A7A8D")])
                 root_item.addChild(child)
 
         self.tasks_list.expandAll()
