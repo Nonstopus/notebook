@@ -10,6 +10,7 @@ from app.models import Board, BoardColumn, BoardItem, Subtask, Task
 
 
 UNSET_DUE_DATETIME = object()
+UNSET_BOARD_FIELD = object()
 ConvertToSubtaskError = storage.ConvertToSubtaskError
 BoardValidationError = storage.BoardValidationError
 
@@ -262,8 +263,27 @@ def create_board_column(db_path: Path, board_id: int, name: str, *, wip_limit: O
     return storage.create_board_column(db_path, board_id, name, wip_limit=wip_limit)
 
 
+def update_board_column(
+    db_path: Path,
+    column_id: int,
+    *,
+    name: str | object = UNSET_BOARD_FIELD,
+    wip_limit: Optional[int] | object = UNSET_BOARD_FIELD,
+) -> Optional[BoardColumn]:
+    kwargs = {}
+    if name is not UNSET_BOARD_FIELD:
+        kwargs["name"] = name
+    if wip_limit is not UNSET_BOARD_FIELD:
+        kwargs["wip_limit"] = wip_limit
+    return storage.update_board_column(db_path, column_id, **kwargs)
+
+
 def rename_board_column(db_path: Path, column_id: int, new_name: str) -> Optional[BoardColumn]:
     return storage.rename_board_column(db_path, column_id, new_name)
+
+
+def delete_board_column(db_path: Path, column_id: int, target_column_id: int) -> bool:
+    return storage.delete_board_column(db_path, column_id, target_column_id)
 
 
 def reorder_board_columns(db_path: Path, board_id: int, ordered_column_ids: List[int]) -> List[BoardColumn]:

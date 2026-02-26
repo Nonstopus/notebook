@@ -237,3 +237,25 @@ def test_board_service_column_validation_and_reorder(tmp_path):
 
     reordered = tasks.reorder_board_columns(db_path, board.id, [created.id, columns[0].id, columns[1].id])
     assert [column.id for column in reordered] == [created.id, columns[0].id, columns[1].id]
+
+
+def test_board_service_delete_column_moves_cards_to_target(tmp_path):
+    db_path = temp_db(tmp_path)
+    board = tasks.create_board(db_path, "Ops", ["Incoming", "Working", "Done"])
+    incoming, working, done = tasks.list_board_columns(db_path, board.id)
+
+    updated = tasks.update_board_column(db_path, working.id, name="In Progress")
+    assert updated is not None
+    assert updated.name == "In Progress"
+
+    task_a = tasks.create_task(db_path, "A")
+    task_b = tasks.create_task(db_path, "B")
+    tasks.move_board_item(db_path, board.id, task_a.id, incoming.id, 0)
+    tasks.move_board_item(db_path, board.id, task_b.id, incoming.id, 1)
+
+    assert tasks.delete_board_column(db_path, incoming.id, done.id) is True
+
+    columns = tasks.list_board_columns(db_path, board.id)
+    assert [column.name for column in columns] == ["In Progress", "Done"]
+    done_items = [item.task_id for item in tasks.list_board_items(db_path, board.id) if item.column_id == done.id]
+    assert done_items == [task_a.id, task_b.id]

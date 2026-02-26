@@ -499,3 +499,45 @@ def test_board_validation_position_and_board_isolation(tmp_path):
     storage.move_board_item(db_path, board_a.id, task.id, a_todo.id, 99)
     item = storage.list_board_items(db_path, board_a.id)[0]
     assert item.position == 0
+
+
+def test_update_and_delete_board_column_with_transfer(tmp_path):
+    db_path = temp_db(tmp_path)
+    board = storage.create_board(db_path, "Flow", ["Todo", "Doing", "Done"])
+    todo, doing, done = storage.list_board_columns(db_path, board.id)
+
+    updated = storage.update_board_column(db_path, doing.id, name="In Progress", wip_limit=2)
+    assert updated is not None
+    assert updated.name == "In Progress"
+    assert updated.wip_limit == 2
+
+    task_a = storage.create_task(db_path, "A")
+    task_b = storage.create_task(db_path, "B")
+    storage.move_board_item(db_path, board.id, task_a.id, todo.id, 0)
+    storage.move_board_item(db_path, board.id, task_b.id, todo.id, 1)
+
+    assert storage.delete_board_column(db_path, todo.id, done.id) is True
+
+    columns_after = storage.list_board_columns(db_path, board.id)
+    assert [col.name for col in columns_after] == ["In Progress", "Done"]
+    assert [col.position for col in columns_after] == [0, 1]
+
+    items_after = storage.list_board_items(db_path, board.id)
+    transferred = [item.task_id for item in items_after if item.column_id == done.id]
+    assert transferred == [task_a.id, task_b.id]
+
+
+def test_board_items_are_filtered_by_board_id(tmp_path):
+    db_path = temp_db(tmp_path)
+    board_a = storage.create_board(db_path, "A", ["Todo"])
+    board_b = storage.create_board(db_path, "B", ["Todo"])
+    a_col = storage.list_board_columns(db_path, board_a.id)[0]
+    b_col = storage.list_board_columns(db_path, board_b.id)[0]
+
+    task_one = storage.create_task(db_path, "Task 1")
+    task_two = storage.create_task(db_path, "Task 2")
+    storage.move_board_item(db_path, board_a.id, task_one.id, a_col.id, 0)
+    storage.move_board_item(db_path, board_b.id, task_two.id, b_col.id, 0)
+
+    assert [item.task_id for item in storage.list_board_items(db_path, board_a.id)] == [task_one.id]
+    assert [item.task_id for item in storage.list_board_items(db_path, board_b.id)] == [task_two.id]

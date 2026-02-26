@@ -892,24 +892,98 @@ def create_board_column(
     return _row_to_board_column(row)
 
 
-def rename_board_column(db_path: Path, column_id: int, new_name: str) -> Optional[BoardColumn]:
-    column_name = _validate_non_empty(new_name, "Название колонки")
+def update_board_column(
+    db_path: Path,
+    column_id: int,
+    *,
+    name: str | object = _UNSET,
+    wip_limit: Optional[int] | object = _UNSET,
+) -> Optional[BoardColumn]:
+    updates: list[str] = []
+    params: list[object] = []
+
     with get_conn(db_path) as conn:
         column = conn.execute("SELECT * FROM board_columns WHERE id = ?", (column_id,)).fetchone()
         if not column:
             return None
-        duplicate = conn.execute(
-            "SELECT 1 FROM board_columns WHERE board_id = ? AND name = ? AND id != ?",
-            (column["board_id"], column_name, column_id),
-        ).fetchone()
-        if duplicate:
-            raise BoardValidationError("Названия колонок в рамках доски должны быть уникальными")
-        conn.execute(
-            "UPDATE board_columns SET name = ? WHERE id = ?",
-            (column_name, column_id),
-        )
+
+        if name is not _UNSET:
+            column_name = _validate_non_empty(str(name), "Название колонки")
+            duplicate = conn.execute(
+                "SELECT 1 FROM board_columns WHERE board_id = ? AND name = ? AND id != ?",
+                (column["board_id"], column_name, column_id),
+            ).fetchone()
+            if duplicate:
+                raise BoardValidationError("Названия колонок в рамках доски должны быть уникальными")
+            updates.append("name = ?")
+            params.append(column_name)
+
+        if wip_limit is not _UNSET:
+            if wip_limit is not None and int(wip_limit) <= 0:
+                raise BoardValidationError("WIP лимит должен быть положительным")
+            updates.append("wip_limit = ?")
+            params.append(wip_limit)
+
+        if updates:
+            params.append(column_id)
+            conn.execute(f"UPDATE board_columns SET {', '.join(updates)} WHERE id = ?", params)
+
         row = conn.execute("SELECT * FROM board_columns WHERE id = ?", (column_id,)).fetchone()
     return _row_to_board_column(row)
+
+
+def rename_board_column(db_path: Path, column_id: int, new_name: str) -> Optional[BoardColumn]:
+    return update_board_column(db_path, column_id, name=new_name)
+
+
+def _repack_board_column_positions(conn: sqlite3.Connection, board_id: int) -> None:
+    rows = conn.execute(
+        "SELECT id FROM board_columns WHERE board_id = ? ORDER BY position ASC, id ASC",
+        (board_id,),
+    ).fetchall()
+    for position, row in enumerate(rows):
+        conn.execute("UPDATE board_columns SET position = ? WHERE id = ?", (position, row["id"]))
+
+
+def delete_board_column(db_path: Path, column_id: int, target_column_id: int) -> bool:
+    with get_conn(db_path) as conn:
+        source = conn.execute("SELECT * FROM board_columns WHERE id = ?", (column_id,)).fetchone()
+        if not source:
+            return False
+
+        target = conn.execute("SELECT * FROM board_columns WHERE id = ?", (target_column_id,)).fetchone()
+        if not target or target["board_id"] != source["board_id"]:
+            raise BoardValidationError("Целевая колонка должна принадлежать той же доске")
+        if target_column_id == column_id:
+            raise BoardValidationError("Нельзя переносить карточки в удаляемую колонку")
+
+        board_columns = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM board_columns WHERE board_id = ?",
+            (source["board_id"],),
+        ).fetchone()["cnt"]
+        if board_columns <= 1:
+            raise BoardValidationError("У доски должна быть хотя бы одна колонка")
+
+        source_items = conn.execute(
+            "SELECT id FROM board_items WHERE column_id = ? ORDER BY position ASC, id ASC",
+            (column_id,),
+        ).fetchall()
+        target_max = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) AS max_pos FROM board_items WHERE column_id = ?",
+            (target_column_id,),
+        ).fetchone()["max_pos"]
+
+        for offset, row in enumerate(source_items):
+            conn.execute(
+                "UPDATE board_items SET column_id = ?, position = ? WHERE id = ?",
+                (target_column_id, target_max + 1 + offset, row["id"]),
+            )
+
+        _repack_column_positions(conn, target_column_id)
+        conn.execute("DELETE FROM board_columns WHERE id = ?", (column_id,))
+        _repack_board_column_positions(conn, source["board_id"])
+
+    return True
 
 
 def reorder_board_columns(db_path: Path, board_id: int, ordered_column_ids: List[int]) -> List[BoardColumn]:
