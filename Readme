@@ -36,10 +36,22 @@
 2. Выберите **Подзадачи = Есть подзадачи** — в списке останутся задачи с иконкой `🧩`.
 3. Выберите **Сортировка = Подзадачи (по убыванию)** — наверху будут задачи с максимальным количеством подзадач.
 
-## Запуск (GUI)
+## Qt-only
+
+Проект поддерживает только Qt GUI (`PySide6`). Все инструкции и запуск ниже относятся исключительно к Qt-варианту интерфейса.
+
+### Запуск
 ```bash
 python -m app.main_qt
 ```
+
+### Known issues
+- В headless-окружениях (например, CI без X-сервера) для smoke-тестов может понадобиться `QT_QPA_PLATFORM=offscreen`.
+- Если `PySide6` не установлен или недоступен рантайм Qt-плагинов, GUI smoke-тесты будут пропущены/провалены в зависимости от окружения.
+
+### Структура UI-модулей
+- `app/main_qt.py` — основной Qt UI и entrypoint GUI.
+- `app/main.py` — stub-совместимость: сообщает, что Tk entrypoint удалён, и перенаправляет на Qt entrypoint.
 
 ## Запуск (CLI)
 ```bash
@@ -60,10 +72,18 @@ python -m app.cli link list
 ```
 База данных `data.db` создаётся рядом с приложением автоматически.
 
-## Тесты
+## CI/локальные проверки
 ```bash
 pytest
+pytest tests/test_no_tkinter_imports.py
 ```
+
+Проверка `tests/test_no_tkinter_imports.py` специально падает при любом `tkinter` импорте внутри `app/`.
+
+## Тестовый чеклист
+- Storage: `pytest tests/test_storage.py`
+- CLI: `pytest tests/test_cli.py tests/test_integration_flows.py`
+- Qt smoke: `pytest tests/test_qt_smoke.py`
 
 ## Структура
 - `app/storage.py` — функции работы с SQLite (задачи, подзадачи, напоминания).
