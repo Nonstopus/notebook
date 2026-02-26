@@ -56,6 +56,46 @@ def test_list_tasks_filters_and_due_reminders_via_service(tmp_path):
     assert list(tasks.due_reminders(db_path, now=now)) == []
 
 
+
+
+def test_is_overdue_rules_with_deadline_guard():
+    now = datetime(2025, 1, 10, 12, 0, 0)
+
+    assert tasks.is_overdue(
+        due_datetime=now - timedelta(hours=1),
+        deadline_enabled=True,
+        is_done=False,
+        now=now,
+    ) is True
+
+    assert tasks.is_overdue(
+        due_datetime=None,
+        deadline_enabled=False,
+        is_done=False,
+        now=now,
+    ) is False
+
+
+def test_disabling_deadline_clears_overdue_state(tmp_path):
+    db_path = temp_db(tmp_path)
+    now = datetime(2025, 1, 10, 12, 0, 0)
+
+    task = tasks.create_task(db_path, "Просроченная", due_datetime=now - timedelta(days=1))
+    assert tasks.is_overdue(
+        due_datetime=task.due_datetime,
+        deadline_enabled=task.due_datetime is not None,
+        now=now,
+    ) is True
+
+    updated = tasks.update_task(db_path, task.id, due_datetime=None)
+    assert updated is not None
+    assert updated.due_datetime is None
+    assert tasks.is_overdue(
+        due_datetime=updated.due_datetime,
+        deadline_enabled=updated.due_datetime is not None,
+        now=now,
+    ) is False
+
 def test_subtask_methods_and_progress_via_service(tmp_path):
     db_path = temp_db(tmp_path)
     parent = tasks.create_task(db_path, "Родитель")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -160,7 +161,16 @@ class BoardsPage(QWidget):
             task = tasks_by_id.get(item.task_id)
             if not task or item.column_id not in self.column_widgets:
                 continue
-            list_item = QListWidgetItem(f"#{task.id} {task.title}")
+            overdue = task_service.is_overdue(
+                due_datetime=task.due_datetime,
+                deadline_enabled=task.due_datetime is not None,
+                is_done=task.is_done,
+                now=datetime.now(),
+            )
+            title = f"#{task.id} {task.title}"
+            if overdue:
+                title = f"{title} · ⚠ Просрочено"
+            list_item = QListWidgetItem(title)
             list_item.setData(Qt.ItemDataRole.UserRole, item.id)
             list_item.setFlags(list_item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
             self.column_widgets[item.column_id].addItem(list_item)
@@ -173,7 +183,16 @@ class BoardsPage(QWidget):
                     for i in range(self.column_widgets[existing.column_id].count())
                 ]
                 if existing.id not in already:
-                    item_widget = QListWidgetItem(f"#{task.id} {task.title}")
+                    overdue = task_service.is_overdue(
+                        due_datetime=task.due_datetime,
+                        deadline_enabled=task.due_datetime is not None,
+                        is_done=task.is_done,
+                        now=datetime.now(),
+                    )
+                    title = f"#{task.id} {task.title}"
+                    if overdue:
+                        title = f"{title} · ⚠ Просрочено"
+                    item_widget = QListWidgetItem(title)
                     item_widget.setData(Qt.ItemDataRole.UserRole, existing.id)
                     item_widget.setFlags(item_widget.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                     self.column_widgets[existing.column_id].addItem(item_widget)
