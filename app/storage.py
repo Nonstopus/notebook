@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
-from .models import Subtask, Task
+from .models import Board, BoardColumn, BoardItem, Subtask, Task
 
 DB_NAME = "data.db"
 _UNSET = object()
@@ -14,6 +14,10 @@ _UNSET = object()
 
 class ConvertToSubtaskError(ValueError):
     """Domain validation error for converting a task to subtask."""
+
+
+class BoardValidationError(ValueError):
+    """Domain validation error for board operations."""
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -104,6 +108,50 @@ def init_db(db_path: Path) -> None:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS boards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS board_columns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                board_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                wip_limit INTEGER,
+                FOREIGN KEY(board_id) REFERENCES boards(id) ON DELETE CASCADE,
+                UNIQUE(board_id, name),
+                UNIQUE(board_id, position),
+                CHECK(position >= 0),
+                CHECK(wip_limit IS NULL OR wip_limit > 0)
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS board_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                board_id INTEGER NOT NULL,
+                task_id INTEGER NOT NULL,
+                column_id INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                FOREIGN KEY(board_id) REFERENCES boards(id) ON DELETE CASCADE,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(column_id) REFERENCES board_columns(id) ON DELETE CASCADE,
+                UNIQUE(board_id, task_id),
+                UNIQUE(column_id, position),
+                CHECK(position >= 0)
+            );
+            """
+        )
+
 
 def _row_to_task(row: sqlite3.Row) -> Task:
     return Task(
@@ -134,6 +182,42 @@ def _row_to_subtask(row: sqlite3.Row) -> Subtask:
 
 def _now() -> str:
     return datetime.utcnow().isoformat()
+
+
+def _row_to_board(row: sqlite3.Row) -> Board:
+    return Board(
+        id=row["id"],
+        name=row["name"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _row_to_board_column(row: sqlite3.Row) -> BoardColumn:
+    return BoardColumn(
+        id=row["id"],
+        board_id=row["board_id"],
+        name=row["name"],
+        position=row["position"],
+        wip_limit=row["wip_limit"],
+    )
+
+
+def _row_to_board_item(row: sqlite3.Row) -> BoardItem:
+    return BoardItem(
+        id=row["id"],
+        board_id=row["board_id"],
+        task_id=row["task_id"],
+        column_id=row["column_id"],
+        position=row["position"],
+    )
+
+
+def _validate_non_empty(name: str, field_name: str) -> str:
+    value = name.strip()
+    if not value:
+        raise BoardValidationError(f"{field_name} не может быть пустым")
+    return value
 
 
 def create_task(
@@ -515,3 +599,255 @@ def set_task_layout(db_path: Path, task_id: int, x: float, y: float) -> bool:
             (task_id, x, y),
         )
     return True
+
+
+def create_board(db_path: Path, name: str, column_names: Optional[List[str]] = None) -> Board:
+    board_name = _validate_non_empty(name, "Название доски")
+    prepared_columns = column_names or ["To Do"]
+    normalized_columns = [_validate_non_empty(col, "Название колонки") for col in prepared_columns]
+    if len(set(normalized_columns)) != len(normalized_columns):
+        raise BoardValidationError("Названия колонок в рамках доски должны быть уникальными")
+    if not normalized_columns:
+        raise BoardValidationError("У доски должна быть хотя бы одна колонка")
+
+    timestamp = _now()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "INSERT INTO boards (name, created_at, updated_at) VALUES (?, ?, ?)",
+            (board_name, timestamp, timestamp),
+        )
+        board_id = cursor.lastrowid
+        for position, column_name in enumerate(normalized_columns):
+            conn.execute(
+                """
+                INSERT INTO board_columns (board_id, name, position, wip_limit)
+                VALUES (?, ?, ?, NULL)
+                """,
+                (board_id, column_name, position),
+            )
+        row = conn.execute("SELECT * FROM boards WHERE id = ?", (board_id,)).fetchone()
+    return _row_to_board(row)
+
+
+def list_boards(db_path: Path) -> List[Board]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT * FROM boards ORDER BY created_at ASC").fetchall()
+    return [_row_to_board(row) for row in rows]
+
+
+def get_board(db_path: Path, board_id: int) -> Optional[Board]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM boards WHERE id = ?", (board_id,)).fetchone()
+    return _row_to_board(row) if row else None
+
+
+def update_board(db_path: Path, board_id: int, name: str) -> Optional[Board]:
+    board_name = _validate_non_empty(name, "Название доски")
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE boards SET name = ?, updated_at = ? WHERE id = ?",
+            (board_name, _now(), board_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        row = conn.execute("SELECT * FROM boards WHERE id = ?", (board_id,)).fetchone()
+    return _row_to_board(row)
+
+
+def delete_board(db_path: Path, board_id: int) -> bool:
+    with get_conn(db_path) as conn:
+        cursor = conn.execute("DELETE FROM boards WHERE id = ?", (board_id,))
+    return cursor.rowcount > 0
+
+
+def list_board_columns(db_path: Path, board_id: int) -> List[BoardColumn]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM board_columns WHERE board_id = ? ORDER BY position ASC",
+            (board_id,),
+        ).fetchall()
+    return [_row_to_board_column(row) for row in rows]
+
+
+def create_board_column(
+    db_path: Path,
+    board_id: int,
+    name: str,
+    *,
+    wip_limit: Optional[int] = None,
+) -> BoardColumn:
+    column_name = _validate_non_empty(name, "Название колонки")
+    if get_board(db_path, board_id) is None:
+        raise BoardValidationError(f"Доска #{board_id} не найдена")
+    if wip_limit is not None and wip_limit <= 0:
+        raise BoardValidationError("WIP лимит должен быть положительным")
+
+    with get_conn(db_path) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM board_columns WHERE board_id = ? AND name = ?",
+            (board_id, column_name),
+        ).fetchone()
+        if exists:
+            raise BoardValidationError("Названия колонок в рамках доски должны быть уникальными")
+        max_position = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) AS max_pos FROM board_columns WHERE board_id = ?",
+            (board_id,),
+        ).fetchone()["max_pos"]
+        cursor = conn.execute(
+            """
+            INSERT INTO board_columns (board_id, name, position, wip_limit)
+            VALUES (?, ?, ?, ?)
+            """,
+            (board_id, column_name, max_position + 1, wip_limit),
+        )
+        row = conn.execute("SELECT * FROM board_columns WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return _row_to_board_column(row)
+
+
+def rename_board_column(db_path: Path, column_id: int, new_name: str) -> Optional[BoardColumn]:
+    column_name = _validate_non_empty(new_name, "Название колонки")
+    with get_conn(db_path) as conn:
+        column = conn.execute("SELECT * FROM board_columns WHERE id = ?", (column_id,)).fetchone()
+        if not column:
+            return None
+        duplicate = conn.execute(
+            "SELECT 1 FROM board_columns WHERE board_id = ? AND name = ? AND id != ?",
+            (column["board_id"], column_name, column_id),
+        ).fetchone()
+        if duplicate:
+            raise BoardValidationError("Названия колонок в рамках доски должны быть уникальными")
+        conn.execute(
+            "UPDATE board_columns SET name = ? WHERE id = ?",
+            (column_name, column_id),
+        )
+        row = conn.execute("SELECT * FROM board_columns WHERE id = ?", (column_id,)).fetchone()
+    return _row_to_board_column(row)
+
+
+def reorder_board_columns(db_path: Path, board_id: int, ordered_column_ids: List[int]) -> List[BoardColumn]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id FROM board_columns WHERE board_id = ? ORDER BY position ASC",
+            (board_id,),
+        ).fetchall()
+        existing_ids = [row["id"] for row in rows]
+        if not existing_ids:
+            raise BoardValidationError("У доски должна быть хотя бы одна колонка")
+        if set(existing_ids) != set(ordered_column_ids) or len(existing_ids) != len(ordered_column_ids):
+            raise BoardValidationError("Некорректный список колонок для переупорядочивания")
+        for offset, column_id in enumerate(ordered_column_ids):
+            conn.execute("UPDATE board_columns SET position = ? WHERE id = ?", (1000 + offset, column_id))
+        for position, column_id in enumerate(ordered_column_ids):
+            conn.execute("UPDATE board_columns SET position = ? WHERE id = ?", (position, column_id))
+
+    return list_board_columns(db_path, board_id)
+
+
+def _repack_column_positions(conn: sqlite3.Connection, column_id: int) -> None:
+    rows = conn.execute(
+        "SELECT id FROM board_items WHERE column_id = ? ORDER BY position ASC, id ASC",
+        (column_id,),
+    ).fetchall()
+    for position, row in enumerate(rows):
+        conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, row["id"]))
+
+
+def list_board_items(db_path: Path, board_id: int) -> List[BoardItem]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM board_items WHERE board_id = ? ORDER BY column_id ASC, position ASC",
+            (board_id,),
+        ).fetchall()
+    return [_row_to_board_item(row) for row in rows]
+
+
+def move_board_item(
+    db_path: Path,
+    board_id: int,
+    task_id: int,
+    column_id: int,
+    position: int,
+) -> BoardItem:
+    if position < 0:
+        raise BoardValidationError("Позиция должна быть неотрицательной")
+
+    with get_conn(db_path) as conn:
+        board = conn.execute("SELECT id FROM boards WHERE id = ?", (board_id,)).fetchone()
+        if not board:
+            raise BoardValidationError(f"Доска #{board_id} не найдена")
+
+        task = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not task:
+            raise BoardValidationError(f"Задача #{task_id} не найдена")
+
+        target_column = conn.execute(
+            "SELECT id, board_id FROM board_columns WHERE id = ?",
+            (column_id,),
+        ).fetchone()
+        if not target_column or target_column["board_id"] != board_id:
+            raise BoardValidationError("Колонка не принадлежит указанной доске")
+
+        item = conn.execute(
+            "SELECT * FROM board_items WHERE board_id = ? AND task_id = ?",
+            (board_id, task_id),
+        ).fetchone()
+
+        if item:
+            old_column_id = item["column_id"]
+            item_id = item["id"]
+            conn.execute("DELETE FROM board_items WHERE id = ?", (item_id,))
+            _repack_column_positions(conn, old_column_id)
+        else:
+            item_id = None
+
+        target_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM board_items WHERE column_id = ?",
+            (column_id,),
+        ).fetchone()["count"]
+        normalized_position = min(position, target_count)
+
+        conn.execute(
+            "UPDATE board_items SET position = position + 1 WHERE column_id = ? AND position >= ?",
+            (column_id, normalized_position),
+        )
+
+        if item_id is None:
+            cursor = conn.execute(
+                """
+                INSERT INTO board_items (board_id, task_id, column_id, position)
+                VALUES (?, ?, ?, ?)
+                """,
+                (board_id, task_id, column_id, normalized_position),
+            )
+            item_id = cursor.lastrowid
+        else:
+            conn.execute(
+                """
+                INSERT INTO board_items (id, board_id, task_id, column_id, position)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (item_id, board_id, task_id, column_id, normalized_position),
+            )
+
+        row = conn.execute("SELECT * FROM board_items WHERE id = ?", (item_id,)).fetchone()
+
+    return _row_to_board_item(row)
+
+
+def ensure_board_item(db_path: Path, board_id: int, task_id: int) -> Optional[BoardItem]:
+    with get_conn(db_path) as conn:
+        existing = conn.execute(
+            "SELECT * FROM board_items WHERE board_id = ? AND task_id = ?",
+            (board_id, task_id),
+        ).fetchone()
+        if existing:
+            return _row_to_board_item(existing)
+
+        first_column = conn.execute(
+            "SELECT id FROM board_columns WHERE board_id = ? ORDER BY position ASC LIMIT 1",
+            (board_id,),
+        ).fetchone()
+        if not first_column:
+            return None
+
+    return move_board_item(db_path, board_id, task_id, first_column["id"], position=10**9)

@@ -167,3 +167,57 @@ def test_layout_methods_via_service(tmp_path):
     assert tasks.get_task_layouts(db_path) == {}
     assert tasks.set_task_layout(db_path, task.id, 10.5, 20.25) is True
     assert tasks.get_task_layouts(db_path)[task.id] == (10.5, 20.25)
+
+
+def test_board_service_multi_board_statuses_and_moves(tmp_path):
+    db_path = temp_db(tmp_path)
+
+    board_one = tasks.create_board(db_path, "Team A", ["Todo", "Doing", "Done"])
+    board_two = tasks.create_board(db_path, "Team B", ["Queue", "Review"])
+
+    assert [column.name for column in tasks.list_board_columns(db_path, board_one.id)] == ["Todo", "Doing", "Done"]
+    assert [column.name for column in tasks.list_board_columns(db_path, board_two.id)] == ["Queue", "Review"]
+
+    task_a = tasks.create_task(db_path, "Task A")
+    task_b = tasks.create_task(db_path, "Task B")
+
+    todo, doing, _ = tasks.list_board_columns(db_path, board_one.id)
+    queue, review = tasks.list_board_columns(db_path, board_two.id)
+
+    tasks.move_board_item(db_path, board_one.id, task_a.id, todo.id, 0)
+    tasks.move_board_item(db_path, board_one.id, task_b.id, todo.id, 1)
+    tasks.move_board_item(db_path, board_one.id, task_b.id, doing.id, 0)
+
+    first_board_items = tasks.list_board_items(db_path, board_one.id)
+    assert [item.task_id for item in first_board_items if item.column_id == todo.id] == [task_a.id]
+    assert [item.task_id for item in first_board_items if item.column_id == doing.id] == [task_b.id]
+
+    tasks.move_board_item(db_path, board_two.id, task_a.id, queue.id, 0)
+    tasks.move_board_item(db_path, board_two.id, task_a.id, review.id, 0)
+    second_board_items = tasks.list_board_items(db_path, board_two.id)
+    assert [item.task_id for item in second_board_items if item.column_id == review.id] == [task_a.id]
+
+
+
+def test_board_service_column_validation_and_reorder(tmp_path):
+    db_path = temp_db(tmp_path)
+    board = tasks.create_board(db_path, "Ops", ["Incoming", "Working"])
+    columns = tasks.list_board_columns(db_path, board.id)
+
+    created = tasks.create_board_column(db_path, board.id, "Done")
+    assert created.position == 2
+
+    renamed = tasks.rename_board_column(db_path, created.id, "Closed")
+    assert renamed is not None
+    assert renamed.name == "Closed"
+
+    try:
+        tasks.rename_board_column(db_path, created.id, "Incoming")
+    except tasks.BoardValidationError as exc:
+        assert "уникальными" in str(exc)
+    else:
+        raise AssertionError("Expected BoardValidationError for duplicate rename")
+
+    reordered = tasks.reorder_board_columns(db_path, board.id, [created.id, columns[0].id, columns[1].id])
+    assert [column.id for column in reordered] == [created.id, columns[0].id, columns[1].id]
+
