@@ -62,6 +62,7 @@ def init_db(db_path: Path) -> None:
             CREATE TABLE IF NOT EXISTS subtasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id INTEGER NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
                 title TEXT NOT NULL,
                 is_done INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -80,6 +81,8 @@ def init_db(db_path: Path) -> None:
             conn.execute("ALTER TABLE subtasks ADD COLUMN due_datetime TEXT")
         if "note" not in subtask_columns:
             conn.execute("ALTER TABLE subtasks ADD COLUMN note TEXT")
+        if "position" not in subtask_columns:
+            conn.execute("ALTER TABLE subtasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
 
         conn.execute(
             """
@@ -170,6 +173,7 @@ def _row_to_subtask(row: sqlite3.Row) -> Subtask:
     return Subtask(
         id=row["id"],
         task_id=row["task_id"],
+        position=row["position"],
         title=row["title"],
         is_done=bool(row["is_done"]),
         created_at=datetime.fromisoformat(row["created_at"]),
@@ -380,15 +384,20 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
             )
 
         now = _now()
+        next_position = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = ?",
+            (parent_task_id,),
+        ).fetchone()[0]
         cursor = conn.execute(
             """
             INSERT INTO subtasks (
-                task_id, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note
+                task_id, position, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 parent_task_id,
+                next_position,
                 child_row["title"],
                 child_row["is_done"],
                 now,
@@ -414,14 +423,18 @@ def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]
         return None
     created_at = _now()
     with get_conn(db_path) as conn:
+        next_position = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()[0]
         cursor = conn.execute(
             """
             INSERT INTO subtasks (
-                task_id, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note
+                task_id, position, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note
             )
-            VALUES (?, ?, 0, ?, ?, NULL, NULL, NULL)
+            VALUES (?, ?, ?, 0, ?, ?, NULL, NULL, NULL)
             """,
-            (task_id, title, created_at, created_at),
+            (task_id, next_position, title, created_at, created_at),
         )
         subtask_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
@@ -431,9 +444,76 @@ def create_subtask(db_path: Path, task_id: int, title: str) -> Optional[Subtask]
 def list_subtasks(db_path: Path, task_id: int) -> List[Subtask]:
     with get_conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM subtasks WHERE task_id = ? ORDER BY created_at ASC", (task_id,)
+            "SELECT * FROM subtasks WHERE task_id = ? ORDER BY position ASC, created_at ASC", (task_id,)
         ).fetchall()
     return [_row_to_subtask(row) for row in rows]
+
+
+def reorder_subtask(db_path: Path, subtask_id: int, new_position: int) -> List[Subtask]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT task_id FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
+        if not row:
+            return []
+
+        task_id = row["task_id"]
+        rows = conn.execute(
+            "SELECT id FROM subtasks WHERE task_id = ? ORDER BY position ASC, created_at ASC",
+            (task_id,),
+        ).fetchall()
+        ordered_ids = [item["id"] for item in rows]
+        if subtask_id not in ordered_ids:
+            return []
+
+        old_index = ordered_ids.index(subtask_id)
+        target_index = min(max(0, new_position), len(ordered_ids) - 1)
+        if old_index != target_index:
+            moved_id = ordered_ids.pop(old_index)
+            ordered_ids.insert(target_index, moved_id)
+
+        now = _now()
+        conn.executemany(
+            "UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ?",
+            [(index, now, item_id) for index, item_id in enumerate(ordered_ids)],
+        )
+        reordered_rows = conn.execute(
+            "SELECT * FROM subtasks WHERE task_id = ? ORDER BY position ASC, created_at ASC",
+            (task_id,),
+        ).fetchall()
+    return [_row_to_subtask(item) for item in reordered_rows]
+
+
+def bulk_reorder_subtasks(db_path: Path, task_id: int, ordered_subtask_ids: List[int]) -> List[Subtask]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id FROM subtasks WHERE task_id = ? ORDER BY position ASC, created_at ASC",
+            (task_id,),
+        ).fetchall()
+        current_ids = [row["id"] for row in rows]
+        if not current_ids:
+            return []
+
+        seen = set()
+        valid_order: List[int] = []
+        current_set = set(current_ids)
+        for subtask_id in ordered_subtask_ids:
+            if subtask_id in current_set and subtask_id not in seen:
+                valid_order.append(subtask_id)
+                seen.add(subtask_id)
+
+        for subtask_id in current_ids:
+            if subtask_id not in seen:
+                valid_order.append(subtask_id)
+
+        now = _now()
+        conn.executemany(
+            "UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ?",
+            [(index, now, subtask_id) for index, subtask_id in enumerate(valid_order)],
+        )
+        reordered_rows = conn.execute(
+            "SELECT * FROM subtasks WHERE task_id = ? ORDER BY position ASC, created_at ASC",
+            (task_id,),
+        ).fetchall()
+    return [_row_to_subtask(row) for row in reordered_rows]
 
 
 def get_subtask(db_path: Path, subtask_id: int) -> Optional[Subtask]:

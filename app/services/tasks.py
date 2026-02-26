@@ -127,6 +127,13 @@ def delete_subtask(db_path: Path, subtask_id: int) -> bool:
 def subtask_progress(db_path: Path, task_id: int) -> Tuple[int, int]:
     return storage.subtask_progress(db_path, task_id)
 
+def reorder_subtask(db_path: Path, subtask_id: int, new_position: int) -> List[Subtask]:
+    return storage.reorder_subtask(db_path, subtask_id, new_position)
+
+
+def bulk_reorder_subtasks(db_path: Path, task_id: int, ordered_subtask_ids: List[int]) -> List[Subtask]:
+    return storage.bulk_reorder_subtasks(db_path, task_id, ordered_subtask_ids)
+
 
 def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: int) -> Optional[Subtask]:
     if child_task_id == parent_task_id:

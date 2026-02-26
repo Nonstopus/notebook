@@ -22,6 +22,7 @@ class Task:
 class Subtask:
     id: int
     task_id: int
+    position: int
     title: str
     is_done: bool
     created_at: datetime
