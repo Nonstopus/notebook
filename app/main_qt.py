@@ -117,6 +117,26 @@ class TaskCardDelegate(QStyledItemDelegate):
         base_height = 76 if self._density == "compact" else 96
         return QSize(option.rect.width(), base_height)
 
+    def _meta_section_rects(self, content_rect: QRectF) -> list[QRectF]:
+        column_gap = 14.0
+        stretches = [2, 1, 1]
+        total_gap = column_gap * (len(stretches) - 1)
+        available_width = max(0.0, content_rect.width() - total_gap)
+        total_stretch = sum(stretches)
+
+        rects: list[QRectF] = []
+        x_cursor = content_rect.left()
+        for index, stretch in enumerate(stretches):
+            if total_stretch == 0:
+                width = 0.0
+            elif index == len(stretches) - 1:
+                width = content_rect.right() - x_cursor
+            else:
+                width = round(available_width * stretch / total_stretch)
+            rects.append(QRectF(x_cursor, content_rect.top(), max(0.0, width), content_rect.height()))
+            x_cursor += width + column_gap
+        return rects
+
     def paint(self, painter: QPainter, option, index) -> None:
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -178,23 +198,42 @@ class TaskCardDelegate(QStyledItemDelegate):
         )
 
         sections = [
-            ("Срок", index.data(ROLE_DEADLINE) or "—"),
-            ("Подзадачи", str(index.data(ROLE_SUBTASKS) or 0)),
-            ("Приоритет", index.data(ROLE_PRIORITY) or "Обычный"),
+            {"label": "Срок", "value": str(index.data(ROLE_DEADLINE) or "—"), "color": QColor(index.data(ROLE_DEADLINE_COLOR) or text_color.name())},
+            {"label": "Подзадачи", "value": str(index.data(ROLE_SUBTASKS) or 0), "color": text_color},
+            {"label": "Приоритет", "value": str(index.data(ROLE_PRIORITY) or "Обычный"), "color": text_color},
         ]
-        x_cursor = left + 16
-        for section_index, (label, value) in enumerate(sections):
+        meta_row_rect = QRectF(left + 16, top + 52, card_rect.width() - 32, 30)
+        section_rects = self._meta_section_rects(meta_row_rect)
+        cell_padding_x = 6.0
+        label_height = 12.0
+        value_height = 16.0
+        label_font = painter.font()
+        label_font.setPointSizeF(max(8.0, label_font.pointSizeF() - 0.5))
+        value_font = painter.font()
+        value_font.setBold(False)
+
+        for section_index, section in enumerate(sections):
+            cell_rect = section_rects[section_index]
+            label_rect = QRectF(cell_rect.left() + cell_padding_x, cell_rect.top(), max(0.0, cell_rect.width() - 2 * cell_padding_x), label_height)
+            value_rect = QRectF(
+                cell_rect.left() + cell_padding_x,
+                cell_rect.top() + label_height + 2,
+                max(0.0, cell_rect.width() - 2 * cell_padding_x),
+                value_height,
+            )
+
+            painter.setFont(label_font)
             painter.setPen(meta_color)
-            painter.drawText(QRectF(x_cursor, top + 54, 65, 16), label)
-            if label == "Срок":
-                painter.setPen(QColor(index.data(ROLE_DEADLINE_COLOR) or text_color.name()))
-            else:
-                painter.setPen(text_color)
-            painter.drawText(QRectF(x_cursor + 54, top + 54, 90, 16), value)
-            x_cursor += 120
-            if section_index < len(sections) - 1:
-                painter.setPen(QPen(QColor("#C7D2DF"), 1))
-                painter.drawLine(int(x_cursor - 10), int(top + 52), int(x_cursor - 10), int(top + 68))
+            painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, section["label"])
+
+            painter.setFont(value_font)
+            painter.setPen(section["color"])
+            elided_value = painter.fontMetrics().elidedText(
+                section["value"],
+                Qt.TextElideMode.ElideRight,
+                max(0, int(value_rect.width())),
+            )
+            painter.drawText(value_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_value)
 
         badge_x = card_rect.right() - 12
         for text, color in reversed(index.data(ROLE_BADGES) or []):
