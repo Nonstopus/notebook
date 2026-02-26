@@ -706,6 +706,56 @@ def bulk_reorder_subtasks(db_path: Path, task_id: int, ordered_subtask_ids: List
     return [_row_to_subtask(row) for row in reordered_rows]
 
 
+def _rebuild_subtask_positions(conn: sqlite3.Connection, task_id: int, now: str) -> None:
+    rows = conn.execute(
+        "SELECT id FROM subtasks WHERE task_id = ? ORDER BY position ASC, created_at ASC",
+        (task_id,),
+    ).fetchall()
+    conn.executemany(
+        "UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ?",
+        [(index, now, row["id"]) for index, row in enumerate(rows)],
+    )
+
+
+def move_subtask(db_path: Path, subtask_id: int, new_task_id: int) -> Optional[Subtask]:
+    with get_conn(db_path) as conn:
+        subtask_row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
+        if not subtask_row:
+            raise ValueError(f"Подзадача #{subtask_id} не найдена")
+
+        new_parent_row = conn.execute("SELECT id, due_datetime FROM tasks WHERE id = ?", (new_task_id,)).fetchone()
+        if not new_parent_row:
+            raise ValueError(f"Задача #{new_task_id} не найдена")
+
+        old_task_id = subtask_row["task_id"]
+        if old_task_id == new_task_id:
+            return _row_to_subtask(subtask_row)
+
+        new_parent_due = (
+            datetime.fromisoformat(new_parent_row["due_datetime"])
+            if new_parent_row["due_datetime"]
+            else None
+        )
+        subtask_due = datetime.fromisoformat(subtask_row["due_datetime"]) if subtask_row["due_datetime"] else None
+        _ensure_subtask_due_within_parent(new_parent_due, subtask_due)
+
+        now = _now()
+        next_position = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = ?",
+            (new_task_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE subtasks SET task_id = ?, position = ?, updated_at = ? WHERE id = ?",
+            (new_task_id, next_position, now, subtask_id),
+        )
+
+        _rebuild_subtask_positions(conn, old_task_id, now)
+        _rebuild_subtask_positions(conn, new_task_id, now)
+
+        updated_row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
+    return _row_to_subtask(updated_row) if updated_row else None
+
+
 def get_subtask(db_path: Path, subtask_id: int) -> Optional[Subtask]:
     with get_conn(db_path) as conn:
         row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()

@@ -638,6 +638,56 @@ def test_update_parent_due_datetime_rejects_conflicting_subtasks(tmp_path):
         raise AssertionError("Expected DeadlineValidationError for parent due datetime update")
 
 
+def test_move_subtask_success(tmp_path):
+    db_path = temp_db(tmp_path)
+    source = storage.create_task(db_path, "Source")
+    target = storage.create_task(db_path, "Target")
+
+    first = storage.create_subtask(db_path, source.id, "Первый")
+    moved = storage.create_subtask(db_path, source.id, "Перенос")
+    assert moved is not None
+    existing_target = storage.create_subtask(db_path, target.id, "Уже в target")
+    assert existing_target is not None
+
+    updated = storage.move_subtask(db_path, moved.id, target.id)
+
+    assert updated is not None
+    assert updated.task_id == target.id
+    assert [item.id for item in storage.list_subtasks(db_path, source.id)] == [first.id]
+    target_subtasks = storage.list_subtasks(db_path, target.id)
+    assert [item.id for item in target_subtasks] == [existing_target.id, updated.id]
+    assert [item.position for item in target_subtasks] == [0, 1]
+
+
+def test_move_subtask_rejects_deadline_violation(tmp_path):
+    db_path = temp_db(tmp_path)
+    source = storage.create_task(db_path, "Source")
+    target = storage.create_task(db_path, "Target", due_datetime=datetime(2026, 1, 10, 10, 0, 0))
+    moved = storage.create_subtask(db_path, source.id, "Перенос", due_datetime=datetime(2026, 1, 10, 12, 0, 0))
+    assert moved is not None
+
+    try:
+        storage.move_subtask(db_path, moved.id, target.id)
+    except storage.DeadlineValidationError as exc:
+        assert "не может быть позже" in str(exc)
+    else:
+        raise AssertionError("Expected DeadlineValidationError for move_subtask")
+
+
+def test_move_subtask_rejects_missing_target_task(tmp_path):
+    db_path = temp_db(tmp_path)
+    source = storage.create_task(db_path, "Source")
+    moved = storage.create_subtask(db_path, source.id, "Перенос")
+    assert moved is not None
+
+    try:
+        storage.move_subtask(db_path, moved.id, 99999)
+    except ValueError as exc:
+        assert "не найдена" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for unknown target task")
+
+
 def test_note_html_sanitization(tmp_path):
     db_path = temp_db(tmp_path)
     raw = "<h2>Заголовок</h2><script>alert(1)</script><p><strong>Текст</strong></p>"

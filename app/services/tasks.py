@@ -158,6 +158,10 @@ def delete_subtask(db_path: Path, subtask_id: int) -> bool:
     return storage.delete_subtask(db_path, subtask_id)
 
 
+def move_subtask(db_path: Path, subtask_id: int, new_task_id: int) -> Optional[Subtask]:
+    return storage.move_subtask(db_path, subtask_id, new_task_id)
+
+
 def subtask_progress(db_path: Path, task_id: int) -> Tuple[int, int]:
     return storage.subtask_progress(db_path, task_id)
 
