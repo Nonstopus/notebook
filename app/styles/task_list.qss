@@ -1,27 +1,23 @@
 QTreeWidget {
-    background: #F3F6FA;
-    border: 1px solid #CED6E0;
-    border-radius: 8px;
+    background: #F7F9FC;
+    border: 1px solid #C9D5E3;
+    border-radius: 10px;
     outline: 0;
-    padding: 6px;
+    padding: 8px;
+    alternate-background-color: #FFFFFF;
 }
 
 QTreeWidget::item {
     margin: 6px 0;
-    border-radius: 8px;
+    border-radius: 10px;
     background: transparent;
 }
 
 QTreeWidget::item:hover {
-    background: #F7F9FC;
+    background: #EFF4FA;
 }
 
-QTreeWidget::item:selected {
-    background: #E8EDF3;
-    color: #1C232B;
-    border: 1px solid #5A6B7D;
-}
-
+QTreeWidget::item:selected,
 QTreeWidget::item:selected:active,
 QTreeWidget::item:selected:!active {
     background: #E8EDF3;
@@ -30,5 +26,19 @@ QTreeWidget::item:selected:!active {
 }
 
 QTreeWidget:focus {
-    border: 1px solid #5A6B7D;
+    border: 2px solid #364B63;
+}
+
+QTreeWidget::item:focus {
+    outline: none;
+}
+
+QPushButton:focus,
+QLineEdit:focus,
+QPlainTextEdit:focus,
+QComboBox:focus,
+QDateTimeEdit:focus,
+QCheckBox:focus {
+    border: 1px solid #364B63;
+    border-radius: 6px;
 }
