@@ -4,12 +4,13 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-from . import storage
+from .storage import DB_NAME
+from .services import tasks as task_service
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Консольный таск-трекер")
-    parser.add_argument("--db", type=Path, default=Path(storage.DB_NAME), help="Путь до SQLite базы")
+    parser.add_argument("--db", type=Path, default=Path(DB_NAME), help="Путь до SQLite базы")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -58,7 +59,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    storage.init_db(args.db)
+    task_service.init_db(args.db)
 
     if args.command == "add":
         due_datetime = None
@@ -68,12 +69,12 @@ def main() -> None:
             except ValueError:
                 print("Неверный формат --due-datetime. Используйте YYYY-MM-DD HH:MM")
                 return
-        task = storage.create_task(args.db, title=args.title, reminder_datetime=due_datetime)
+        task = task_service.create_task(args.db, title=args.title, reminder_datetime=due_datetime)
         print(f"Добавлено: #{task.id} {task.title}")
         return
 
     if args.command == "list":
-        tasks = storage.list_tasks(args.db, search=args.search)
+        tasks = task_service.list_tasks(args.db, search=args.search)
         if not tasks:
             print("Ничего не найдено" if args.search else "Список задач пуст")
             return
@@ -85,7 +86,7 @@ def main() -> None:
         return
 
     if args.command == "done":
-        task = storage.update_task(args.db, args.task_id, is_done=True)
+        task = task_service.update_task(args.db, args.task_id, is_done=True)
         if not task:
             print(f"Задача #{args.task_id} не найдена")
             return
@@ -93,7 +94,7 @@ def main() -> None:
         return
 
     if args.command == "delete":
-        deleted = storage.delete_task(args.db, args.task_id)
+        deleted = task_service.delete_task(args.db, args.task_id)
         if not deleted:
             print(f"Задача #{args.task_id} не найдена")
             return
@@ -102,7 +103,7 @@ def main() -> None:
 
     if args.command == "convert-to-subtask":
         try:
-            subtask = storage.convert_task_to_subtask(args.db, args.task_id, args.parent_task_id)
+            subtask = task_service.convert_task_to_subtask(args.db, args.task_id, args.parent_task_id)
         except ValueError:
             print("Нельзя сделать задачу подзадачей самой себя")
             return
@@ -116,7 +117,7 @@ def main() -> None:
 
     if args.command == "link":
         if args.link_command == "add":
-            created = storage.create_task_link(args.db, args.from_id, args.to_id)
+            created = task_service.create_task_link(args.db, args.from_id, args.to_id)
             if not created:
                 print("Не удалось добавить связь")
                 return
@@ -124,9 +125,7 @@ def main() -> None:
             return
 
         if args.link_command == "list":
-            links = storage.list_task_links(args.db)
-            if args.task_id is not None:
-                links = [pair for pair in links if args.task_id in pair]
+            links = task_service.list_task_links(args.db, task_id=args.task_id)
             if not links:
                 print("Связи не найдены")
                 return
@@ -138,7 +137,7 @@ def main() -> None:
             if args.from_id is None or args.to_id is None:
                 print("Укажите пару from_id to_id")
                 return
-            deleted = storage.delete_task_link(args.db, args.from_id, args.to_id)
+            deleted = task_service.delete_task_link(args.db, args.from_id, args.to_id)
             if not deleted:
                 print("Связь не найдена")
                 return
