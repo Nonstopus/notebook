@@ -123,6 +123,21 @@ def test_convert_task_to_subtask_errors(tmp_path):
         assert "с подзадачами" in str(exc)
 
 
+def test_convert_task_to_subtask_rejects_linked_child(tmp_path):
+    db_path = temp_db(tmp_path)
+
+    parent = tasks.create_task(db_path, "Родитель")
+    child = tasks.create_task(db_path, "Дочерняя")
+    linked = tasks.create_task(db_path, "Связанная")
+    assert tasks.create_task_link(db_path, child.id, linked.id)
+
+    try:
+        tasks.convert_task_to_subtask(db_path, child.id, parent.id)
+        assert False, "Ожидалось исключение"
+    except tasks.ConvertToSubtaskError as exc:
+        assert "связях графа" in str(exc)
+
+
 def test_link_methods_via_service(tmp_path):
     db_path = temp_db(tmp_path)
     first = tasks.create_task(db_path, "Шаг 1")
