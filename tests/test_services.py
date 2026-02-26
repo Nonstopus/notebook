@@ -50,6 +50,28 @@ def test_search_and_due_reminders_via_service(tmp_path):
     assert [task.title for task in reminders] == ["Позвонить"]
 
 
+def test_mark_done_clears_reminder_and_search_in_note(tmp_path):
+    db_path = temp_db(tmp_path)
+    now = datetime.utcnow()
+
+    task = tasks.create_task(
+        db_path,
+        "Подготовить отчёт",
+        reminder_datetime=now - timedelta(minutes=5),
+        note="финальный созвон",
+    )
+
+    in_note = tasks.list_tasks(db_path, search="созвон")
+    assert [item.id for item in in_note] == [task.id]
+
+    updated = tasks.update_task(db_path, task.id, is_done=True)
+    assert updated is not None
+    assert updated.is_done is True
+    assert updated.reminder_datetime is None
+
+    assert list(tasks.due_reminders(db_path, now=now)) == []
+
+
 def test_links_via_service(tmp_path):
     db_path = temp_db(tmp_path)
     first = tasks.create_task(db_path, "Шаг 1")

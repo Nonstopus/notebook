@@ -14,8 +14,10 @@ try:
     from PySide6.QtGui import QBrush, QPainter, QPen
     from PySide6.QtWidgets import (
         QApplication,
+        QCheckBox,
         QDateTimeEdit,
         QDialog,
+        QFormLayout,
         QGraphicsEllipseItem,
         QGraphicsLineItem,
         QGraphicsScene,
@@ -29,7 +31,11 @@ try:
         QListWidgetItem,
         QMainWindow,
         QMessageBox,
+        QPlainTextEdit,
         QPushButton,
+        QSplitter,
+        QTreeWidget,
+        QTreeWidgetItem,
         QVBoxLayout,
         QWidget,
     )
@@ -171,7 +177,7 @@ class TaskGraphDialog(QDialog):
         task_service.set_task_layout(self.db_path, task_id, position.x(), position.y())
 
     def _pick_task_id(self, title: str, options: list[Tuple[int, str]]) -> Optional[int]:
-        labels = [f"#{task_id} {name}" for task_id, name in options]
+        labels = [f"#{task_id} {task_title}" for task_id, task_title in options]
         selected, ok = QInputDialog.getItem(self, title, "Выберите задачу", labels, 0, False)
         if not ok:
             return None
@@ -220,156 +226,22 @@ class TaskGraphDialog(QDialog):
         self.refresh_graph()
 
 
-class TaskDetailDialog(QDialog):
-    def __init__(self, db_path: Path, task_id: int, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.db_path = db_path
-        self.task_id = task_id
-        self._subtasks_cache = []
-
-        self.setWindowTitle("Детали задачи")
-        self.resize(520, 420)
-        self._build_ui()
-        self.refresh()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-
-        title_row = QHBoxLayout()
-        title_row.addWidget(QLabel("Название", self))
-        self.title_input = QLineEdit(self)
-        title_row.addWidget(self.title_input)
-        save_title_btn = QPushButton("Сохранить", self)
-        save_title_btn.clicked.connect(self.save_title)
-        title_row.addWidget(save_title_btn)
-        layout.addLayout(title_row)
-
-        reminder_row = QHBoxLayout()
-        reminder_row.addWidget(QLabel("Напоминание", self))
-        self.reminder_input = QDateTimeEdit(self)
-        self.reminder_input.setCalendarPopup(True)
-        self.reminder_input.setDisplayFormat("yyyy-MM-dd HH:mm")
-        reminder_row.addWidget(self.reminder_input)
-
-        save_reminder_btn = QPushButton("Сохранить", self)
-        save_reminder_btn.clicked.connect(self.save_reminder)
-        reminder_row.addWidget(save_reminder_btn)
-
-        clear_reminder_btn = QPushButton("Очистить", self)
-        clear_reminder_btn.clicked.connect(self.clear_reminder)
-        reminder_row.addWidget(clear_reminder_btn)
-        layout.addLayout(reminder_row)
-
-        layout.addWidget(QLabel("Подзадачи", self))
-        self.subtasks_list = QListWidget(self)
-        self.subtasks_list.itemDoubleClicked.connect(lambda _: self.toggle_subtask())
-        layout.addWidget(self.subtasks_list)
-
-        subtask_actions = QHBoxLayout()
-        add_subtask_btn = QPushButton("Добавить", self)
-        add_subtask_btn.clicked.connect(self.add_subtask)
-        subtask_actions.addWidget(add_subtask_btn)
-
-        toggle_subtask_btn = QPushButton("Готово/Не готово", self)
-        toggle_subtask_btn.clicked.connect(self.toggle_subtask)
-        subtask_actions.addWidget(toggle_subtask_btn)
-
-        delete_subtask_btn = QPushButton("Удалить", self)
-        delete_subtask_btn.clicked.connect(self.delete_subtask)
-        subtask_actions.addWidget(delete_subtask_btn)
-
-        layout.addLayout(subtask_actions)
-
-    def refresh(self) -> None:
-        task = task_service.get_task(self.db_path, self.task_id)
-        if not task:
-            QMessageBox.warning(self, "Ошибка", "Задача не найдена")
-            self.reject()
-            return
-
-        self.title_input.setText(task.title)
-        if task.reminder_datetime:
-            self.reminder_input.setDateTime(task.reminder_datetime)
-        else:
-            self.reminder_input.setDateTime(datetime.now())
-
-        self.subtasks_list.clear()
-        self._subtasks_cache = task_service.list_subtasks(self.db_path, self.task_id)
-        for subtask in self._subtasks_cache:
-            label = f"[{'✓' if subtask.is_done else ' '}] {subtask.title}"
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, subtask.id)
-            self.subtasks_list.addItem(item)
-
-    def save_title(self) -> None:
-        title = self.title_input.text().strip()
-        if not title:
-            QMessageBox.information(self, "Пустой заголовок", "Введите название задачи")
-            return
-        task_service.update_task(self.db_path, self.task_id, title=title)
-        self.refresh()
-
-    def save_reminder(self) -> None:
-        reminder = self.reminder_input.dateTime().toPython()
-        task_service.update_task(self.db_path, self.task_id, reminder_datetime=reminder)
-        self.refresh()
-
-    def clear_reminder(self) -> None:
-        task_service.update_task(self.db_path, self.task_id, reminder_datetime=None)
-        self.refresh()
-
-    def _selected_subtask(self):
-        row = self.subtasks_list.currentRow()
-        if row < 0 or row >= len(self._subtasks_cache):
-            return None
-        return self._subtasks_cache[row]
-
-    def add_subtask(self) -> None:
-        title, ok = QInputDialog.getText(self, "Новая подзадача", "Введите название подзадачи")
-        if not ok:
-            return
-        cleaned_title = title.strip()
-        if not cleaned_title:
-            QMessageBox.information(self, "Пустой заголовок", "Введите название подзадачи")
-            return
-        task_service.create_subtask(self.db_path, self.task_id, cleaned_title)
-        self.refresh()
-
-    def toggle_subtask(self) -> None:
-        subtask = self._selected_subtask()
-        if subtask is None:
-            QMessageBox.information(self, "Выберите подзадачу", "Выберите подзадачу для обновления")
-            return
-        task_service.update_subtask(self.db_path, subtask.id, is_done=not subtask.is_done)
-        self.refresh()
-
-    def delete_subtask(self) -> None:
-        subtask = self._selected_subtask()
-        if subtask is None:
-            QMessageBox.information(self, "Выберите подзадачу", "Выберите подзадачу для удаления")
-            return
-        answer = QMessageBox.question(self, "Удалить подзадачу", f"Удалить '{subtask.title}'?")
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        task_service.delete_subtask(self.db_path, subtask.id)
-        self.refresh()
-
-
 class TaskQtWindow(QMainWindow):
     def __init__(self, db_path: Path):
         super().__init__()
         self.db_path = db_path
         self._tasks_cache = []
+        self._tasks_by_id: Dict[int, object] = {}
         task_service.init_db(self.db_path)
 
         self.setWindowTitle("Task Tracker Desktop (Qt)")
-        self.resize(760, 520)
+        self.resize(980, 560)
         self._build_ui()
         self.refresh_tasks()
 
     def _build_ui(self) -> None:
         central = QWidget(self)
-        layout = QVBoxLayout(central)
+        root = QVBoxLayout(central)
 
         search_row = QHBoxLayout()
         search_row.addWidget(QLabel("Поиск", self))
@@ -385,43 +257,82 @@ class TaskQtWindow(QMainWindow):
         clear_search_btn = QPushButton("Сброс", self)
         clear_search_btn.clicked.connect(self.clear_search)
         search_row.addWidget(clear_search_btn)
-        layout.addLayout(search_row)
+        root.addLayout(search_row)
 
-        self.tasks_list = QListWidget(self)
-        self.tasks_list.itemDoubleClicked.connect(lambda _: self.open_task_details())
-        layout.addWidget(self.tasks_list)
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        actions = QHBoxLayout()
+        left_panel = QWidget(self)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.addWidget(QLabel("Задачи и подзадачи", self))
+        self.tasks_list = QTreeWidget(self)
+        self.tasks_list.setHeaderLabels(["Задача", "Прогресс"])
+        self.tasks_list.itemSelectionChanged.connect(self.on_selection_changed)
+        self.tasks_list.setAlternatingRowColors(True)
+        left_layout.addWidget(self.tasks_list)
 
+        left_actions = QHBoxLayout()
         add_btn = QPushButton("Добавить", self)
         add_btn.clicked.connect(self.add_task)
-        actions.addWidget(add_btn)
-
-        detail_btn = QPushButton("Открыть", self)
-        detail_btn.clicked.connect(self.open_task_details)
-        actions.addWidget(detail_btn)
-
-        toggle_btn = QPushButton("Готово/Не готово", self)
-        toggle_btn.clicked.connect(self.toggle_task)
-        actions.addWidget(toggle_btn)
+        left_actions.addWidget(add_btn)
 
         delete_btn = QPushButton("Удалить", self)
         delete_btn.clicked.connect(self.delete_task)
-        actions.addWidget(delete_btn)
+        left_actions.addWidget(delete_btn)
 
         convert_btn = QPushButton("Сделать подзадачей", self)
         convert_btn.clicked.connect(self.convert_task_to_subtask)
-        actions.addWidget(convert_btn)
+        left_actions.addWidget(convert_btn)
 
         graph_btn = QPushButton("Граф задач", self)
         graph_btn.clicked.connect(self.open_graph_mode)
-        actions.addWidget(graph_btn)
+        left_actions.addWidget(graph_btn)
+
+        left_layout.addLayout(left_actions)
+
+        right_panel = QWidget(self)
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.addWidget(QLabel("Карточка задачи", self))
+
+        form = QFormLayout()
+        self.title_input = QLineEdit(self)
+        form.addRow("Заголовок", self.title_input)
+
+        self.status_checkbox = QCheckBox("Задача выполнена", self)
+        form.addRow("Статус", self.status_checkbox)
+
+        self.reminder_input = QDateTimeEdit(self)
+        self.reminder_input.setCalendarPopup(True)
+        self.reminder_input.setDisplayFormat("yyyy-MM-dd HH:mm")
+        form.addRow("Напоминание", self.reminder_input)
+
+        self.note_input = QPlainTextEdit(self)
+        self.note_input.setPlaceholderText("Заметка")
+        self.note_input.setFixedHeight(140)
+        form.addRow("Note", self.note_input)
+        right_layout.addLayout(form)
+
+        card_actions = QHBoxLayout()
+        save_card_btn = QPushButton("Сохранить", self)
+        save_card_btn.clicked.connect(self.save_selected_task)
+        card_actions.addWidget(save_card_btn)
+
+        clear_reminder_btn = QPushButton("Очистить напоминание", self)
+        clear_reminder_btn.clicked.connect(self.clear_selected_reminder)
+        card_actions.addWidget(clear_reminder_btn)
 
         refresh_btn = QPushButton("Обновить", self)
         refresh_btn.clicked.connect(self.refresh_tasks)
-        actions.addWidget(refresh_btn)
+        card_actions.addWidget(refresh_btn)
 
-        layout.addLayout(actions)
+        right_layout.addLayout(card_actions)
+        right_layout.addStretch(1)
+
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        root.addWidget(splitter)
+
         self.setCentralWidget(central)
 
     def clear_search(self) -> None:
@@ -429,25 +340,76 @@ class TaskQtWindow(QMainWindow):
         self.refresh_tasks()
 
     def refresh_tasks(self) -> None:
-        self.tasks_list.clear()
+        selected = self._selected_task_id()
         query = self.search_input.text().strip() if hasattr(self, "search_input") else ""
         self._tasks_cache = task_service.list_tasks(self.db_path, search=query or None)
+        self._tasks_by_id = {task.id: task for task in self._tasks_cache}
+
+        self.tasks_list.clear()
         for task in self._tasks_cache:
             done_subtasks, total_subtasks = task_service.subtask_progress(self.db_path, task.id)
-            reminder_flag = " ⏰" if task.reminder_datetime else ""
-            subtask_badge = ""
-            if total_subtasks > 0:
-                subtask_badge = f" | подзадачи: {done_subtasks}/{total_subtasks}"
-            label = f"[{'✓' if task.is_done else ' '}] {task.title}{reminder_flag}{subtask_badge}"
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, task.id)
-            self.tasks_list.addItem(item)
+            reminder_flag = "⏰ " if task.reminder_datetime else ""
+            text = f"[{'✓' if task.is_done else ' '}] {reminder_flag}{task.title}"
+            progress = f"{done_subtasks}/{total_subtasks}" if total_subtasks else "-"
+            root_item = QTreeWidgetItem([text, progress])
+            root_item.setData(0, Qt.ItemDataRole.UserRole, task.id)
+            self.tasks_list.addTopLevelItem(root_item)
+
+            subtasks = task_service.list_subtasks(self.db_path, task.id)
+            for subtask in subtasks:
+                st_text = f"[{'✓' if subtask.is_done else ' '}] {subtask.title}"
+                child = QTreeWidgetItem([st_text, "subtask"])
+                child.setDisabled(True)
+                root_item.addChild(child)
+
+        self.tasks_list.expandAll()
+        if selected is not None:
+            self._select_task_in_tree(selected)
+        elif self.tasks_list.topLevelItemCount() > 0:
+            self.tasks_list.setCurrentItem(self.tasks_list.topLevelItem(0))
+        else:
+            self._clear_card()
+
+    def _selected_task_id(self) -> Optional[int]:
+        item = self.tasks_list.currentItem()
+        if not item:
+            return None
+        task_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(task_id, int):
+            return None
+        return task_id
+
+    def _select_task_in_tree(self, task_id: int) -> None:
+        for index in range(self.tasks_list.topLevelItemCount()):
+            item = self.tasks_list.topLevelItem(index)
+            if item.data(0, Qt.ItemDataRole.UserRole) == task_id:
+                self.tasks_list.setCurrentItem(item)
+                return
 
     def _selected_task(self):
-        row = self.tasks_list.currentRow()
-        if row < 0 or row >= len(self._tasks_cache):
+        task_id = self._selected_task_id()
+        if task_id is None:
             return None
-        return self._tasks_cache[row]
+        return self._tasks_by_id.get(task_id) or task_service.get_task(self.db_path, task_id)
+
+    def _clear_card(self) -> None:
+        self.title_input.setText("")
+        self.status_checkbox.setChecked(False)
+        self.reminder_input.setDateTime(datetime.now())
+        self.note_input.setPlainText("")
+
+    def on_selection_changed(self) -> None:
+        task = self._selected_task()
+        if task is None:
+            self._clear_card()
+            return
+        self.title_input.setText(task.title)
+        self.status_checkbox.setChecked(task.is_done)
+        self.note_input.setPlainText(task.note or "")
+        if task.reminder_datetime:
+            self.reminder_input.setDateTime(task.reminder_datetime)
+        else:
+            self.reminder_input.setDateTime(datetime.now())
 
     def add_task(self) -> None:
         title, ok = QInputDialog.getText(self, "Новая задача", "Введите название задачи")
@@ -459,27 +421,44 @@ class TaskQtWindow(QMainWindow):
             QMessageBox.information(self, "Пустой заголовок", "Введите название задачи")
             return
 
-        task_service.create_task(self.db_path, cleaned_title)
+        created = task_service.create_task(self.db_path, cleaned_title)
         self.refresh_tasks()
+        self._select_task_in_tree(created.id)
 
-    def open_task_details(self) -> None:
+    def save_selected_task(self) -> None:
         task = self._selected_task()
         if task is None:
-            QMessageBox.information(self, "Выберите задачу", "Выберите задачу для просмотра")
+            QMessageBox.information(self, "Выберите задачу", "Выберите задачу для редактирования")
             return
-        dialog = TaskDetailDialog(self.db_path, task.id, self)
-        dialog.exec()
-        self.refresh_tasks()
 
-    def toggle_task(self) -> None:
+        title = self.title_input.text().strip()
+        if not title:
+            QMessageBox.information(self, "Пустой заголовок", "Введите название задачи")
+            return
+
+        reminder = self.reminder_input.dateTime().toPython()
+        updated = task_service.update_task(
+            self.db_path,
+            task.id,
+            title=title,
+            is_done=self.status_checkbox.isChecked(),
+            reminder_datetime=reminder,
+            note=self.note_input.toPlainText(),
+        )
+        if not updated:
+            QMessageBox.warning(self, "Ошибка", "Не удалось сохранить задачу")
+            return
+        self.refresh_tasks()
+        self._select_task_in_tree(task.id)
+
+    def clear_selected_reminder(self) -> None:
         task = self._selected_task()
         if task is None:
             QMessageBox.information(self, "Выберите задачу", "Выберите задачу для обновления")
             return
-
-        updated = task_service.update_task(self.db_path, task.id, is_done=not task.is_done)
-        if updated:
-            self.refresh_tasks()
+        task_service.update_task(self.db_path, task.id, reminder_datetime=None)
+        self.refresh_tasks()
+        self._select_task_in_tree(task.id)
 
     def delete_task(self) -> None:
         task = self._selected_task()
