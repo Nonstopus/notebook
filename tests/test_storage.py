@@ -32,6 +32,41 @@ def test_subtasks_and_progress(tmp_path):
     assert (completed, total) == (1, 1)
 
 
+
+
+def test_reorder_subtask_moves_item_with_clamped_position(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Основная")
+    first = storage.create_subtask(db_path, task.id, "Шаг 1")
+    second = storage.create_subtask(db_path, task.id, "Шаг 2")
+    third = storage.create_subtask(db_path, task.id, "Шаг 3")
+
+    reordered = storage.reorder_subtask(db_path, second.id, -10)
+    assert [subtask.id for subtask in reordered] == [second.id, first.id, third.id]
+
+    reordered = storage.reorder_subtask(db_path, second.id, 99)
+    assert [subtask.id for subtask in reordered] == [first.id, third.id, second.id]
+
+
+def test_bulk_reorder_subtasks_ignores_invalid_ids_and_normalizes_positions(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Основная")
+    first = storage.create_subtask(db_path, task.id, "Шаг 1")
+    second = storage.create_subtask(db_path, task.id, "Шаг 2")
+    third = storage.create_subtask(db_path, task.id, "Шаг 3")
+
+    reordered = storage.bulk_reorder_subtasks(
+        db_path,
+        task.id,
+        [third.id, 999999, third.id, first.id],
+    )
+    assert [subtask.id for subtask in reordered] == [third.id, first.id, second.id]
+    assert [subtask.position for subtask in reordered] == [0, 1, 2]
+
+    listed = storage.list_subtasks(db_path, task.id)
+    assert [subtask.id for subtask in listed] == [third.id, first.id, second.id]
+
+
 def test_reminder_clears_on_completion(tmp_path):
     db_path = temp_db(tmp_path)
     reminder_time = datetime.utcnow() + timedelta(minutes=10)

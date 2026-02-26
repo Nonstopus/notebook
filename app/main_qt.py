@@ -4,7 +4,7 @@ import math
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .models import ItemKind, TreeItemRef
 from .services import tasks as task_service
@@ -14,6 +14,7 @@ try:
     from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
     from PySide6.QtGui import QBrush, QColor, QPainter, QPen
     from PySide6.QtWidgets import (
+        QAbstractItemView,
         QApplication,
         QCheckBox,
         QComboBox,
@@ -309,6 +310,7 @@ class TaskCardDelegate(QStyledItemDelegate):
 
 class TaskTreeWidget(QTreeWidget):
     quick_action_requested = Signal(str)
+    subtasks_reordered = Signal(int, list)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -345,6 +347,25 @@ class TaskTreeWidget(QTreeWidget):
                     self.quick_action_requested.emit(action)
                     return
         super().mousePressEvent(event)
+
+    def dropEvent(self, event) -> None:
+        super().dropEvent(event)
+        parent = self.currentItem().parent() if self.currentItem() is not None else None
+        if parent is None:
+            return
+        parent_ref = parent.data(0, ROLE_ITEM_REF)
+        if not isinstance(parent_ref, TreeItemRef) or parent_ref.kind != ItemKind.TASK:
+            return
+
+        ordered_subtask_ids = []
+        for index in range(parent.childCount()):
+            child = parent.child(index)
+            child_ref = child.data(0, ROLE_ITEM_REF)
+            if isinstance(child_ref, TreeItemRef) and child_ref.kind == ItemKind.SUBTASK:
+                ordered_subtask_ids.append(child_ref.id)
+
+        if ordered_subtask_ids:
+            self.subtasks_reordered.emit(parent_ref.id, ordered_subtask_ids)
 
 
 class GraphEdgeItem(QGraphicsLineItem):
@@ -755,11 +776,13 @@ class TaskQtWindow(QMainWindow):
         self.tasks_list.itemChanged.connect(self._on_tree_item_changed)
         self.tasks_list.itemActivated.connect(self._open_selected_item_card)
         self.tasks_list.quick_action_requested.connect(self._handle_quick_action)
+        self.tasks_list.subtasks_reordered.connect(self._on_subtasks_reordered)
         self.tasks_list.setMouseTracking(True)
         self.tasks_list.setAllColumnsShowFocus(True)
         self.tasks_list.setWordWrap(False)
         self.tasks_list.setIndentation(26)
         self.tasks_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tasks_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.tasks_list.customContextMenuRequested.connect(self._show_task_context_menu)
         self.task_delegate = TaskCardDelegate(self.tasks_list)
         self.tasks_list.setItemDelegate(self.task_delegate)
@@ -1001,6 +1024,10 @@ class TaskQtWindow(QMainWindow):
             self._clear_card()
         self._is_refreshing_tree = False
         self._update_empty_state(query)
+
+    def _on_subtasks_reordered(self, task_id: int, ordered_subtask_ids: List[int]) -> None:
+        task_service.bulk_reorder_subtasks(self.db_path, task_id, ordered_subtask_ids)
+        self.refresh_tasks()
 
     def _update_empty_state(self, query: str) -> None:
         empty = self.tasks_list.topLevelItemCount() == 0
