@@ -45,12 +45,14 @@ def test_main_qt_import_has_no_tkinter_dependency(monkeypatch):
 
 
 def test_qt_window_starts(app_instance, tmp_path):
+    tasks.create_task(Path(tmp_path / "qt.db"), "Первая задача")
     window = TaskQtWindow(Path(tmp_path / "qt.db"))
     window.show()
     app_instance.processEvents()
 
     assert window.windowTitle() == "Task Tracker Desktop (Qt)"
     assert window.tasks_list is not None
+    assert window.tasks_list.topLevelItemCount() == 1
     assert window.isVisible()
 
     window.close()
@@ -76,7 +78,7 @@ def test_convert_task_to_subtask_refreshes_list(app_instance, tmp_path, monkeypa
 
     titles = [task.title for task in window._tasks_cache]
     assert titles == ["Родитель"]
-    assert window.tasks_list.topLevelItem(0).text(1) == "0/1 · подзадач: 1"
+    assert window.tasks_list.topLevelItem(0).text(1) == "0/1 (0%) · подзадач: 1"
 
     window.close()
 
@@ -109,3 +111,18 @@ def test_qt_filters_by_status_and_subtasks(app_instance, tmp_path):
     assert "🧩" in row_title
 
     window.close()
+
+
+def test_qt_main_entrypoint_smoke(monkeypatch, app_instance, tmp_path):
+    from app import main_qt
+
+    monkeypatch.setattr(main_qt, "DB_PATH", Path(tmp_path / "entrypoint.db"))
+    monkeypatch.setattr(main_qt, "QApplication", lambda argv: app_instance)
+    monkeypatch.setattr(TaskQtWindow, "show", lambda self: None)
+    monkeypatch.setattr(app_instance, "exec", lambda: 0)
+
+    tasks.create_task(main_qt.DB_PATH, "Из entrypoint")
+
+    result = main_qt.main()
+
+    assert result == 0

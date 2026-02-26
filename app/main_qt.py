@@ -313,6 +313,7 @@ class TaskQtWindow(QMainWindow):
         search_row.addWidget(QLabel("Поиск", self))
         self.search_input = QLineEdit(self)
         self.search_input.setPlaceholderText("Название или заметка")
+        self.search_input.textChanged.connect(self.refresh_tasks)
         self.search_input.returnPressed.connect(self.refresh_tasks)
         search_row.addWidget(self.search_input)
 
@@ -364,9 +365,17 @@ class TaskQtWindow(QMainWindow):
         left_layout.addWidget(self.tasks_list)
 
         left_actions = QHBoxLayout()
-        add_btn = QPushButton("Добавить", self)
+        add_btn = QPushButton("Новая задача", self)
         add_btn.clicked.connect(self.add_task)
         left_actions.addWidget(add_btn)
+
+        add_subtask_btn = QPushButton("Подзадача", self)
+        add_subtask_btn.clicked.connect(self.add_subtask)
+        left_actions.addWidget(add_subtask_btn)
+
+        complete_btn = QPushButton("Отметить выполненной", self)
+        complete_btn.clicked.connect(self.mark_selected_done)
+        left_actions.addWidget(complete_btn)
 
         delete_btn = QPushButton("Удалить", self)
         delete_btn.clicked.connect(self.delete_task)
@@ -479,18 +488,19 @@ class TaskQtWindow(QMainWindow):
         self.tasks_list.clear()
         for task in self._tasks_cache:
             done_subtasks, total_subtasks = progress_map[task.id]
+            percent = int((done_subtasks / total_subtasks) * 100) if total_subtasks else 0
             reminder_flag = "⏰ " if task.reminder_datetime else ""
             subtask_badge = "🧩 " if total_subtasks else ""
             text = f"[{'✓' if task.is_done else ' '}] {subtask_badge}{reminder_flag}{task.title}"
-            progress = f"{done_subtasks}/{total_subtasks} · подзадач: {total_subtasks}"
+            progress = f"{done_subtasks}/{total_subtasks} ({percent}%) · подзадач: {total_subtasks}"
             root_item = QTreeWidgetItem([text, progress])
             root_item.setData(0, Qt.ItemDataRole.UserRole, task.id)
             self.tasks_list.addTopLevelItem(root_item)
 
             subtasks = task_service.list_subtasks(self.db_path, task.id)
             for subtask in subtasks:
-                st_text = f"[{'✓' if subtask.is_done else ' '}] {subtask.title}"
-                child = QTreeWidgetItem([st_text, "subtask"])
+                st_text = f"↳ [{'✓' if subtask.is_done else ' '}] {subtask.title}"
+                child = QTreeWidgetItem([st_text, "выполнена" if subtask.is_done else "активна"])
                 child.setData(0, Qt.ItemDataRole.UserRole, ("subtask", subtask.id))
                 root_item.addChild(child)
 
@@ -549,6 +559,15 @@ class TaskQtWindow(QMainWindow):
         if task_id is None:
             return None
         return self._tasks_by_id.get(task_id) or task_service.get_task(self.db_path, task_id)
+
+    def _selected_subtask_id(self) -> Optional[int]:
+        item = self.tasks_list.currentItem()
+        if item is None:
+            return None
+        task_ref = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(task_ref, tuple) and len(task_ref) == 2 and task_ref[0] == "subtask":
+            return task_ref[1]
+        return None
 
     def _clear_card(self) -> None:
         self.title_input.setText("")
@@ -609,6 +628,49 @@ class TaskQtWindow(QMainWindow):
         self.refresh_tasks()
         self._select_task_in_tree(task.id)
 
+    def add_subtask(self) -> None:
+        task = self._selected_task()
+        if task is None:
+            QMessageBox.information(self, "Выберите задачу", "Выберите родительскую задачу")
+            return
+
+        title, ok = QInputDialog.getText(self, "Новая подзадача", "Введите название подзадачи")
+        if not ok:
+            return
+
+        cleaned_title = title.strip()
+        if not cleaned_title:
+            QMessageBox.information(self, "Пустой заголовок", "Введите название подзадачи")
+            return
+
+        created = task_service.create_subtask(self.db_path, task.id, cleaned_title)
+        if not created:
+            QMessageBox.warning(self, "Ошибка", "Не удалось создать подзадачу")
+            return
+
+        self.refresh_tasks()
+        self._focus_subtask_in_tree(task.id, created.id)
+
+    def mark_selected_done(self) -> None:
+        subtask_id = self._selected_subtask_id()
+        if subtask_id is not None:
+            updated = task_service.update_subtask(self.db_path, subtask_id, is_done=True)
+            if not updated:
+                QMessageBox.warning(self, "Ошибка", "Не удалось отметить подзадачу")
+                return
+            self.refresh_tasks()
+            self._focus_subtask_in_tree(updated.task_id, updated.id)
+            return
+
+        task = self._selected_task()
+        if task is None:
+            QMessageBox.information(self, "Выберите задачу", "Выберите задачу или подзадачу")
+            return
+
+        task_service.update_task(self.db_path, task.id, is_done=True)
+        self.refresh_tasks()
+        self._select_task_in_tree(task.id)
+
     def clear_selected_reminder(self) -> None:
         task = self._selected_task()
         if task is None:
@@ -619,6 +681,15 @@ class TaskQtWindow(QMainWindow):
         self._select_task_in_tree(task.id)
 
     def delete_task(self) -> None:
+        subtask_id = self._selected_subtask_id()
+        if subtask_id is not None:
+            answer = QMessageBox.question(self, "Удалить подзадачу", "Удалить выбранную подзадачу?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            task_service.delete_subtask(self.db_path, subtask_id)
+            self.refresh_tasks()
+            return
+
         task = self._selected_task()
         if task is None:
             QMessageBox.information(self, "Выберите задачу", "Выберите задачу для удаления")
@@ -674,8 +745,21 @@ class TaskQtWindow(QMainWindow):
         self.tasks_list.setCurrentItem(item)
 
         menu = QMenu(self)
+        create_task_action = menu.addAction("Новая задача")
+        create_subtask_action = menu.addAction("Новая подзадача")
+        mark_done_action = menu.addAction("Отметить выполненной")
+        delete_action = menu.addAction("Удалить")
+        menu.addSeparator()
         convert_action = menu.addAction("Сделать подзадачей…")
         chosen = menu.exec(self.tasks_list.viewport().mapToGlobal(pos))
+        if chosen == create_task_action:
+            self.add_task()
+        if chosen == create_subtask_action:
+            self.add_subtask()
+        if chosen == mark_done_action:
+            self.mark_selected_done()
+        if chosen == delete_action:
+            self.delete_task()
         if chosen == convert_action:
             self.convert_task_to_subtask()
 
