@@ -285,3 +285,88 @@ def test_task_links_schema_and_metadata(tmp_path):
     assert row["type"] == "depends_on"
     assert row["created_at"]
     assert row["updated_at"]
+
+
+def test_board_crud_and_columns_validation(tmp_path):
+    db_path = temp_db(tmp_path)
+
+    board = storage.create_board(db_path, "Разработка", ["Backlog", "Doing", "Done"])
+    assert board.name == "Разработка"
+
+    loaded = storage.get_board(db_path, board.id)
+    assert loaded is not None
+
+    renamed = storage.update_board(db_path, board.id, "Новая разработка")
+    assert renamed is not None
+    assert renamed.name == "Новая разработка"
+
+    columns = storage.list_board_columns(db_path, board.id)
+    assert [col.name for col in columns] == ["Backlog", "Doing", "Done"]
+
+    try:
+        storage.create_board_column(db_path, board.id, "Doing")
+    except storage.BoardValidationError as exc:
+        assert "уникальными" in str(exc)
+    else:
+        raise AssertionError("Expected BoardValidationError for duplicate column name")
+
+    assert storage.delete_board(db_path, board.id) is True
+    assert storage.get_board(db_path, board.id) is None
+
+
+def test_board_column_reorder_and_move_items(tmp_path):
+    db_path = temp_db(tmp_path)
+    board = storage.create_board(db_path, "Flow", ["Todo", "Doing", "Done"])
+    columns = storage.list_board_columns(db_path, board.id)
+    todo, doing, done = columns
+
+    task_a = storage.create_task(db_path, "A")
+    task_b = storage.create_task(db_path, "B")
+    task_c = storage.create_task(db_path, "C")
+
+    storage.move_board_item(db_path, board.id, task_a.id, todo.id, 0)
+    storage.move_board_item(db_path, board.id, task_b.id, todo.id, 1)
+    storage.move_board_item(db_path, board.id, task_c.id, todo.id, 1)
+
+    items = storage.list_board_items(db_path, board.id)
+    in_todo = [item.task_id for item in items if item.column_id == todo.id]
+    assert in_todo == [task_a.id, task_c.id, task_b.id]
+
+    storage.move_board_item(db_path, board.id, task_c.id, doing.id, 0)
+    items = storage.list_board_items(db_path, board.id)
+    todo_ids = [item.task_id for item in items if item.column_id == todo.id]
+    doing_ids = [item.task_id for item in items if item.column_id == doing.id]
+    assert todo_ids == [task_a.id, task_b.id]
+    assert doing_ids == [task_c.id]
+
+    reordered = storage.reorder_board_columns(db_path, board.id, [done.id, todo.id, doing.id])
+    assert [col.id for col in reordered] == [done.id, todo.id, doing.id]
+
+
+def test_board_validation_position_and_board_isolation(tmp_path):
+    db_path = temp_db(tmp_path)
+    board_a = storage.create_board(db_path, "A", ["Todo", "Done"])
+    board_b = storage.create_board(db_path, "B", ["Queue"])
+
+    task = storage.create_task(db_path, "Shared")
+    a_todo = storage.list_board_columns(db_path, board_a.id)[0]
+    b_queue = storage.list_board_columns(db_path, board_b.id)[0]
+
+    try:
+        storage.move_board_item(db_path, board_a.id, task.id, b_queue.id, 0)
+    except storage.BoardValidationError as exc:
+        assert "не принадлежит" in str(exc)
+    else:
+        raise AssertionError("Expected BoardValidationError for foreign column")
+
+    try:
+        storage.move_board_item(db_path, board_a.id, task.id, a_todo.id, -1)
+    except storage.BoardValidationError as exc:
+        assert "неотрицательной" in str(exc)
+    else:
+        raise AssertionError("Expected BoardValidationError for negative position")
+
+    storage.move_board_item(db_path, board_a.id, task.id, a_todo.id, 99)
+    item = storage.list_board_items(db_path, board_a.id)[0]
+    assert item.position == 0
+

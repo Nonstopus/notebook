@@ -51,3 +51,29 @@ class TaskLink:
     to_task_id: int
     link_type: str
     created_at: datetime
+
+
+@dataclass
+class Board:
+    id: int
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class BoardColumn:
+    id: int
+    board_id: int
+    name: str
+    position: int
+    wip_limit: Optional[int]
+
+
+@dataclass
+class BoardItem:
+    id: int
+    board_id: int
+    task_id: int
+    column_id: int
+    position: int

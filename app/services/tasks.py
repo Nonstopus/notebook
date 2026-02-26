@@ -5,11 +5,13 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from app import storage
-from app.models import Subtask, Task
+
+from app.models import Board, BoardColumn, BoardItem, Subtask, Task
 
 
 UNSET_DUE_DATETIME = object()
 ConvertToSubtaskError = storage.ConvertToSubtaskError
+BoardValidationError = storage.BoardValidationError
 
 
 def init_db(db_path: Path) -> None:
@@ -182,3 +184,52 @@ def get_task_layouts(db_path: Path) -> Dict[int, Tuple[float, float]]:
 
 def set_task_layout(db_path: Path, task_id: int, x: float, y: float) -> bool:
     return storage.set_task_layout(db_path, task_id, x, y)
+
+
+
+def create_board(db_path: Path, name: str, column_names: Optional[List[str]] = None) -> Board:
+    return storage.create_board(db_path, name, column_names)
+
+
+def list_boards(db_path: Path) -> List[Board]:
+    return storage.list_boards(db_path)
+
+
+def get_board(db_path: Path, board_id: int) -> Optional[Board]:
+    return storage.get_board(db_path, board_id)
+
+
+def update_board(db_path: Path, board_id: int, name: str) -> Optional[Board]:
+    return storage.update_board(db_path, board_id, name)
+
+
+def delete_board(db_path: Path, board_id: int) -> bool:
+    return storage.delete_board(db_path, board_id)
+
+
+def list_board_columns(db_path: Path, board_id: int) -> List[BoardColumn]:
+    return storage.list_board_columns(db_path, board_id)
+
+
+def create_board_column(db_path: Path, board_id: int, name: str, *, wip_limit: Optional[int] = None) -> BoardColumn:
+    return storage.create_board_column(db_path, board_id, name, wip_limit=wip_limit)
+
+
+def rename_board_column(db_path: Path, column_id: int, new_name: str) -> Optional[BoardColumn]:
+    return storage.rename_board_column(db_path, column_id, new_name)
+
+
+def reorder_board_columns(db_path: Path, board_id: int, ordered_column_ids: List[int]) -> List[BoardColumn]:
+    return storage.reorder_board_columns(db_path, board_id, ordered_column_ids)
+
+
+def list_board_items(db_path: Path, board_id: int) -> List[BoardItem]:
+    return storage.list_board_items(db_path, board_id)
+
+
+def move_board_item(db_path: Path, board_id: int, task_id: int, column_id: int, position: int) -> BoardItem:
+    return storage.move_board_item(db_path, board_id, task_id, column_id, position)
+
+
+def ensure_board_item(db_path: Path, board_id: int, task_id: int) -> Optional[BoardItem]:
+    return storage.ensure_board_item(db_path, board_id, task_id)
