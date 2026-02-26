@@ -193,6 +193,41 @@ def test_convert_task_to_subtask_with_deleted_parent(tmp_path):
     assert storage.get_task(db_path, child.id) is not None
 
 
+def test_convert_task_to_subtask_rejects_child_with_subtasks(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent = storage.create_task(db_path, "Родитель")
+    child = storage.create_task(db_path, "Дочерняя")
+    storage.create_subtask(db_path, child.id, "Внутренняя подзадача")
+
+    try:
+        storage.convert_task_to_subtask(db_path, child.id, parent.id)
+    except ValueError as exc:
+        assert "задачу с подзадачами" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for child with subtasks")
+
+    assert storage.get_task(db_path, child.id) is not None
+    assert storage.list_subtasks(db_path, parent.id) == []
+
+
+def test_convert_task_to_subtask_rejects_child_with_links(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent = storage.create_task(db_path, "Родитель")
+    child = storage.create_task(db_path, "Дочерняя")
+    extra = storage.create_task(db_path, "Связанная")
+    assert storage.create_task_link(db_path, child.id, extra.id) is True
+
+    try:
+        storage.convert_task_to_subtask(db_path, child.id, parent.id)
+    except ValueError as exc:
+        assert "связях графа" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for child with graph links")
+
+    assert storage.get_task(db_path, child.id) is not None
+    assert storage.list_subtasks(db_path, parent.id) == []
+
+
 def test_task_links_prevent_self_and_cycles(tmp_path):
     db_path = temp_db(tmp_path)
     first = storage.create_task(db_path, "A")
