@@ -6,17 +6,19 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Dict, Optional, Set, Tuple
 
-from . import storage
 from .models import Task
+from .services import tasks as task_service
 
-DB_PATH = Path(storage.DB_NAME)
+from .storage import DB_NAME
+
+DB_PATH = Path(DB_NAME)
 
 
 class TaskApp:
     def __init__(self, root: tk.Tk, db_path: Path):
         self.root = root
         self.db_path = db_path
-        storage.init_db(db_path)
+        task_service.init_db(db_path)
         self.root.title("Task Tracker Desktop")
         self.root.geometry("640x480")
         self._build_ui()
@@ -46,9 +48,9 @@ class TaskApp:
 
     def refresh_tasks(self) -> None:
         self.tasks_listbox.delete(0, tk.END)
-        tasks = storage.list_tasks(self.db_path)
+        tasks = task_service.list_tasks(self.db_path)
         for task in tasks:
-            progress = storage.subtask_progress(self.db_path, task.id)
+            progress = task_service.subtask_progress(self.db_path, task.id)
             reminder_flag = " ⏰" if task.reminder_datetime else ""
             prefix = "📁 " if progress[1] > 0 else ""
             label = (
@@ -70,7 +72,7 @@ class TaskApp:
         if not title:
             messagebox.showinfo("Пустой заголовок", "Введите название задачи")
             return
-        storage.create_task(self.db_path, title=title)
+        task_service.create_task(self.db_path, title=title)
         self.task_entry.delete(0, tk.END)
         self.refresh_tasks()
 
@@ -79,7 +81,7 @@ class TaskApp:
         if not task:
             messagebox.showinfo("Выберите задачу", "Выберите задачу для обновления")
             return
-        updated = storage.update_task(self.db_path, task.id, is_done=not task.is_done)
+        updated = task_service.update_task(self.db_path, task.id, is_done=not task.is_done)
         if updated:
             self.refresh_tasks()
 
@@ -89,7 +91,7 @@ class TaskApp:
             messagebox.showinfo("Выберите задачу", "Выберите задачу для удаления")
             return
         if messagebox.askyesno("Удалить задачу", f"Удалить '{task.title}'?"):
-            storage.delete_task(self.db_path, task.id)
+            task_service.delete_task(self.db_path, task.id)
             self.refresh_tasks()
 
     def open_task(self) -> None:
@@ -107,10 +109,10 @@ class TaskApp:
 
     def _check_reminders(self) -> None:
         now = datetime.utcnow()
-        reminders = list(storage.due_reminders(self.db_path, now=now))
+        reminders = list(task_service.due_reminders(self.db_path, now=now))
         for task in reminders:
             messagebox.showinfo("Напоминание", f"Пора заняться: {task.title}")
-            storage.update_task(self.db_path, task.id, reminder_datetime=None)
+            task_service.update_task(self.db_path, task.id, reminder_datetime=None)
         self._schedule_reminder_check()
 
 
@@ -173,7 +175,7 @@ class TaskDetail:
         self._refresh_parent_options()
 
     def _refresh_parent_options(self) -> None:
-        tasks = storage.list_tasks(self.app.db_path)
+        tasks = task_service.list_tasks(self.app.db_path)
         options = []
         self._parent_options: Dict[str, int] = {}
         for task in tasks:
@@ -186,9 +188,9 @@ class TaskDetail:
         self.parent_task_var.set("")
 
     def refresh_subtasks(self) -> None:
-        self.task = storage.get_task(self.app.db_path, self.task.id) or self.task
+        self.task = task_service.get_task(self.app.db_path, self.task.id) or self.task
         self.subtask_list.delete(0, tk.END)
-        subtasks = storage.list_subtasks(self.app.db_path, self.task.id)
+        subtasks = task_service.list_subtasks(self.app.db_path, self.task.id)
         self._subtasks_cache = subtasks
         for st in subtasks:
             self.subtask_list.insert(tk.END, f"[{'✓' if st.is_done else ' '}] {st.title}")
@@ -196,7 +198,7 @@ class TaskDetail:
         self.app.refresh_tasks()
 
     def _on_status_change(self) -> None:
-        storage.update_task(self.app.db_path, self.task.id, is_done=self.status_var.get())
+        task_service.update_task(self.app.db_path, self.task.id, is_done=self.status_var.get())
         self.refresh_subtasks()
 
     def save_title(self) -> None:
@@ -204,7 +206,7 @@ class TaskDetail:
         if not title:
             messagebox.showinfo("Пустой заголовок", "Введите название задачи")
             return
-        storage.update_task(self.app.db_path, self.task.id, title=title)
+        task_service.update_task(self.app.db_path, self.task.id, title=title)
         self.window.title(title)
         self.refresh_subtasks()
 
@@ -218,11 +220,11 @@ class TaskDetail:
         except ValueError:
             messagebox.showinfo("Неверный формат", "Используйте YYYY-MM-DD HH:MM")
             return
-        storage.update_task(self.app.db_path, self.task.id, reminder_datetime=reminder)
+        task_service.update_task(self.app.db_path, self.task.id, reminder_datetime=reminder)
         self.refresh_subtasks()
 
     def clear_reminder(self) -> None:
-        storage.update_task(self.app.db_path, self.task.id, reminder_datetime=None)
+        task_service.update_task(self.app.db_path, self.task.id, reminder_datetime=None)
         self.reminder_entry.delete(0, tk.END)
         self.refresh_subtasks()
 
@@ -236,7 +238,7 @@ class TaskDetail:
         title = self.subtask_entry.get().strip()
         if not title:
             return
-        storage.create_subtask(self.app.db_path, self.task.id, title)
+        task_service.create_subtask(self.app.db_path, self.task.id, title)
         self.subtask_entry.delete(0, tk.END)
         self.refresh_subtasks()
 
@@ -244,14 +246,14 @@ class TaskDetail:
         subtask = self._selected_subtask()
         if not subtask:
             return
-        storage.update_subtask(self.app.db_path, subtask.id, is_done=not subtask.is_done)
+        task_service.update_subtask(self.app.db_path, subtask.id, is_done=not subtask.is_done)
         self.refresh_subtasks()
 
     def delete_subtask(self) -> None:
         subtask = self._selected_subtask()
         if not subtask:
             return
-        storage.delete_subtask(self.app.db_path, subtask.id)
+        task_service.delete_subtask(self.app.db_path, subtask.id)
         self.refresh_subtasks()
 
     def convert_to_subtask(self) -> None:
@@ -270,7 +272,7 @@ class TaskDetail:
             messagebox.showinfo("Неверный выбор", "Нельзя сделать задачу подзадачей самой себя")
             return
 
-        converted = storage.convert_task_to_subtask(self.app.db_path, self.task.id, parent_task_id)
+        converted = task_service.convert_task_to_subtask(self.app.db_path, self.task.id, parent_task_id)
         if not converted:
             messagebox.showinfo("Не удалось преобразовать", "Целевая задача не найдена или уже удалена")
             self._refresh_parent_options()
@@ -324,9 +326,9 @@ class PlanWindow:
         self.canvas.bind("<ButtonRelease-1>", self._finish_drag)
 
     def refresh_canvas(self) -> None:
-        self.tasks = storage.list_tasks(self.app.db_path)
-        self.links = storage.list_task_links(self.app.db_path)
-        layout = storage.get_task_layouts(self.app.db_path)
+        self.tasks = task_service.list_tasks(self.app.db_path)
+        self.links = task_service.list_task_links(self.app.db_path)
+        layout = task_service.get_task_layouts(self.app.db_path)
 
         self.canvas.delete("all")
         self._nodes: Dict[int, Tuple[float, float]] = {}
@@ -405,7 +407,7 @@ class PlanWindow:
         target = self._task_label_to_id.get(self.target_var.get())
         if source is None or target is None:
             return
-        if not storage.create_task_link(self.app.db_path, source, target):
+        if not task_service.create_task_link(self.app.db_path, source, target):
             messagebox.showinfo("Нельзя связать", "Проверьте выбранные задачи (они не должны совпадать)")
         self._clear_highlight()
         self.refresh_canvas()
@@ -415,7 +417,7 @@ class PlanWindow:
         if "->" not in raw:
             return
         source_id, target_id = [int(part.strip()) for part in raw.split("->", maxsplit=1)]
-        storage.delete_task_link(self.app.db_path, source_id, target_id)
+        task_service.delete_task_link(self.app.db_path, source_id, target_id)
         self._clear_highlight()
         self.refresh_canvas()
 
@@ -436,7 +438,7 @@ class PlanWindow:
             return
         x = max(20, event.x - self._drag_offset[0])
         y = max(20, event.y - self._drag_offset[1])
-        storage.set_task_layout(self.app.db_path, self._drag_task_id, x, y)
+        task_service.set_task_layout(self.app.db_path, self._drag_task_id, x, y)
         self.refresh_canvas()
 
     def _finish_drag(self, _event: tk.Event) -> None:
