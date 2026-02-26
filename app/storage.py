@@ -252,6 +252,27 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
         if not child_row or not parent_exists:
             return None
 
+        child_subtasks_count = conn.execute(
+            "SELECT COUNT(*) FROM subtasks WHERE task_id = ?", (child_task_id,)
+        ).fetchone()[0]
+        if child_subtasks_count > 0:
+            raise ValueError(
+                "Нельзя конвертировать задачу с подзадачами: сначала перенесите или удалите её подзадачи"
+            )
+
+        linked_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM task_links
+            WHERE source_task_id = ? OR target_task_id = ?
+            """,
+            (child_task_id, child_task_id),
+        ).fetchone()[0]
+        if linked_count > 0:
+            raise ValueError(
+                "Нельзя конвертировать задачу, участвующую в связях графа: сначала удалите связи"
+            )
+
         now = _now()
         cursor = conn.execute(
             """
