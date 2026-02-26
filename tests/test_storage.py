@@ -636,3 +636,82 @@ def test_update_parent_due_datetime_rejects_conflicting_subtasks(tmp_path):
         assert "Нельзя установить дедлайн задачи раньше" in str(exc)
     else:
         raise AssertionError("Expected DeadlineValidationError for parent due datetime update")
+
+
+def test_note_html_sanitization(tmp_path):
+    db_path = temp_db(tmp_path)
+    raw = "<h2>Заголовок</h2><script>alert(1)</script><p><strong>Текст</strong></p>"
+
+    task = storage.create_task(db_path, "Заметка", note=raw)
+
+    assert task.note is not None
+    assert "<script>" not in task.note
+    assert "<h2>" in task.note
+
+
+def test_attachment_crud_for_task_and_subtask(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Task")
+    subtask = storage.create_subtask(db_path, task.id, "Subtask")
+    assert subtask is not None
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text("hello attachment", encoding="utf-8")
+
+    task_attachment = storage.create_attachment(
+        db_path,
+        entity_type="task",
+        entity_id=task.id,
+        source_path=source_file,
+        original_name="task-sample.txt",
+        mime="text/plain",
+    )
+    subtask_attachment = storage.create_attachment(
+        db_path,
+        entity_type="subtask",
+        entity_id=subtask.id,
+        source_path=source_file,
+        original_name="subtask-sample.txt",
+        mime="text/plain",
+    )
+
+    task_items = storage.list_attachments(db_path, entity_type="task", entity_id=task.id)
+    subtask_items = storage.list_attachments(db_path, entity_type="subtask", entity_id=subtask.id)
+
+    assert [item.id for item in task_items] == [task_attachment.id]
+    assert [item.id for item in subtask_items] == [subtask_attachment.id]
+
+    assert storage.delete_attachment(db_path, task_attachment.id) is True
+    assert storage.get_attachment(db_path, task_attachment.id) is None
+
+
+def test_attachment_errors_for_missing_and_big_file(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Task")
+
+    missing_file = tmp_path / "missing.bin"
+    try:
+        storage.create_attachment(
+            db_path,
+            entity_type="task",
+            entity_id=task.id,
+            source_path=missing_file,
+        )
+    except storage.AttachmentStorageError:
+        pass
+    else:
+        raise AssertionError("Expected AttachmentStorageError for missing file")
+
+    big_file = tmp_path / "big.bin"
+    big_file.write_bytes(b"x" * (storage.MAX_ATTACHMENT_SIZE + 1))
+    try:
+        storage.create_attachment(
+            db_path,
+            entity_type="task",
+            entity_id=task.id,
+            source_path=big_file,
+        )
+    except storage.AttachmentValidationError:
+        pass
+    else:
+        raise AssertionError("Expected AttachmentValidationError for too large file")

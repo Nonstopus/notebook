@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,7 +20,7 @@ from .storage import DB_NAME
 
 try:
     from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
-    from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
+    from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QPainter, QPen, QPolygonF
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -29,6 +30,7 @@ try:
         QDialog,
         QFormLayout,
         QFrame,
+        QFileDialog,
         QGraphicsEllipseItem,
         QGraphicsLineItem,
         QGraphicsScene,
@@ -43,7 +45,8 @@ try:
         QMainWindow,
         QMenu,
         QMessageBox,
-        QPlainTextEdit,
+        QTextEdit,
+        QToolBar,
         QPushButton,
         QSplitter,
         QSizePolicy,
@@ -963,11 +966,31 @@ class TaskQtWindow(QMainWindow):
         self.has_due_checkbox.toggled.connect(self.due_input.setEnabled)
         form.addRow("Дата и время дедлайна", self.due_input)
 
-        self.note_input = QPlainTextEdit(self)
-        self.note_input.setPlaceholderText("Заметка")
-        self.note_input.setFixedHeight(140)
-        form.addRow("Note", self.note_input)
+        self.note_toolbar = QToolBar("Форматирование", self)
+        self._build_note_toolbar()
+        right_layout.addWidget(self.note_toolbar)
+
+        self.note_input = QTextEdit(self)
+        self.note_input.setPlaceholderText("Заметка (поддерживает форматирование)")
+        self.note_input.setFixedHeight(180)
+        form.addRow("Заметка", self.note_input)
         right_layout.addLayout(form)
+
+        right_layout.addWidget(QLabel("Вложения", self))
+        self.attachments_list = QListWidget(self)
+        self.attachments_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        right_layout.addWidget(self.attachments_list)
+        attachments_actions = QHBoxLayout()
+        add_attachment_btn = QPushButton("Прикрепить файл", self)
+        add_attachment_btn.clicked.connect(self.add_attachment)
+        attachments_actions.addWidget(add_attachment_btn)
+        open_attachment_btn = QPushButton("Открыть", self)
+        open_attachment_btn.clicked.connect(self.open_selected_attachment)
+        attachments_actions.addWidget(open_attachment_btn)
+        remove_attachment_btn = QPushButton("Удалить", self)
+        remove_attachment_btn.clicked.connect(self.delete_selected_attachment)
+        attachments_actions.addWidget(remove_attachment_btn)
+        right_layout.addLayout(attachments_actions)
 
         card_actions = QHBoxLayout()
         self.save_card_btn = QPushButton("Сохранить", self)
@@ -1003,6 +1026,46 @@ class TaskQtWindow(QMainWindow):
         qss_path = Path(__file__).with_name("styles").joinpath("task_list.qss")
         if qss_path.exists():
             self.tasks_list.setStyleSheet(qss_path.read_text(encoding="utf-8"))
+
+    def _build_note_toolbar(self) -> None:
+        bold_action = QAction("Ж", self)
+        bold_action.triggered.connect(lambda: self.note_input.setFontWeight(700 if self.note_input.fontWeight() < 700 else 400))
+        self.note_toolbar.addAction(bold_action)
+
+        italic_action = QAction("К", self)
+        italic_action.triggered.connect(lambda: self.note_input.setFontItalic(not self.note_input.fontItalic()))
+        self.note_toolbar.addAction(italic_action)
+
+        underline_action = QAction("Ч", self)
+        underline_action.triggered.connect(lambda: self.note_input.setFontUnderline(not self.note_input.fontUnderline()))
+        self.note_toolbar.addAction(underline_action)
+
+        self.note_toolbar.addSeparator()
+
+        bullet_action = QAction("• Список", self)
+        bullet_action.triggered.connect(lambda: self.note_input.insertHtml("<ul><li></li></ul>"))
+        self.note_toolbar.addAction(bullet_action)
+
+        numbered_action = QAction("1. Список", self)
+        numbered_action.triggered.connect(lambda: self.note_input.insertHtml("<ol><li></li></ol>"))
+        self.note_toolbar.addAction(numbered_action)
+
+        self.note_toolbar.addSeparator()
+
+        h_action = QAction("H2", self)
+        h_action.triggered.connect(lambda: self._wrap_selection_with_tag("h2"))
+        self.note_toolbar.addAction(h_action)
+
+        quote_action = QAction("Цитата", self)
+        quote_action.triggered.connect(lambda: self._wrap_selection_with_tag("blockquote"))
+        self.note_toolbar.addAction(quote_action)
+
+    def _wrap_selection_with_tag(self, tag: str) -> None:
+        cursor = self.note_input.textCursor()
+        selected = cursor.selectedText().strip()
+        if not selected:
+            selected = "Текст"
+        cursor.insertHtml(f"<{tag}>{selected}</{tag}>")
 
     def _apply_density(self) -> None:
         density = "compact" if self.density_mode.currentText().lower().startswith("compact") else "comfortable"
@@ -1269,8 +1332,9 @@ class TaskQtWindow(QMainWindow):
         self.reminder_input.setDateTime(datetime.now())
         self.has_due_checkbox.setChecked(False)
         self.due_input.setDateTime(datetime.now())
-        self.note_input.setPlainText("")
+        self.note_input.setHtml("")
         self.priority_input.setCurrentText("Средний")
+        self.attachments_list.clear()
 
     def _open_selected_item_card(self) -> None:
         self.on_selection_changed()
@@ -1291,11 +1355,12 @@ class TaskQtWindow(QMainWindow):
             self.title_input.setText(subtask.title)
             self.status_checkbox.setText("Подзадача выполнена")
             self.status_checkbox.setChecked(subtask.is_done)
-            self.note_input.setPlainText(subtask.note or "")
+            self.note_input.setHtml(subtask.note or "")
             self.reminder_input.setDateTime(subtask.reminder_datetime or datetime.now())
             self.has_due_checkbox.setChecked(subtask.due_datetime is not None)
             self.due_input.setDateTime(subtask.due_datetime or datetime.now())
             self.priority_input.setCurrentText(_priority_to_label(subtask.priority))
+            self._load_attachments("subtask", subtask.id)
             return
 
         task = self._selected_task()
@@ -1306,11 +1371,12 @@ class TaskQtWindow(QMainWindow):
         self.title_input.setText(task.title)
         self.status_checkbox.setText("Задача выполнена")
         self.status_checkbox.setChecked(task.is_done)
-        self.note_input.setPlainText(task.note or "")
+        self.note_input.setHtml(task.note or "")
         self.reminder_input.setDateTime(task.reminder_datetime or datetime.now())
         self.has_due_checkbox.setChecked(task.due_datetime is not None)
         self.due_input.setDateTime(task.due_datetime or datetime.now())
         self.priority_input.setCurrentText(_priority_to_label(task.priority))
+        self._load_attachments("task", task.id)
 
     def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if self._is_refreshing_tree or column != 0:
@@ -1340,6 +1406,74 @@ class TaskQtWindow(QMainWindow):
             on_success=lambda updated: (self.refresh_tasks(), self._select_task_in_tree(updated.id)),
             error_message="Не удалось обновить задачу. Попробуйте снова.",
         )
+
+    def _load_attachments(self, entity_type: str, entity_id: int) -> None:
+        self.attachments_list.clear()
+        for attachment in task_service.list_attachments(self.db_path, entity_type=entity_type, entity_id=entity_id):
+            size_kb = max(1, math.ceil(attachment.size / 1024))
+            item = QListWidgetItem(
+                f"{attachment.original_name} ({attachment.mime}, {size_kb} KB)",
+                self.attachments_list,
+            )
+            item.setData(Qt.ItemDataRole.UserRole, attachment.id)
+
+    def add_attachment(self) -> None:
+        item_ref = self._selected_item_ref()
+        if item_ref is None:
+            QMessageBox.information(self, "Выберите элемент", "Сначала выберите задачу или подзадачу")
+            return
+
+        path_text, _ = QFileDialog.getOpenFileName(self, "Выберите файл")
+        if not path_text:
+            return
+
+        entity_type = "subtask" if item_ref.kind == ItemKind.SUBTASK else "task"
+        entity_id = item_ref.id
+        try:
+            task_service.create_attachment(self.db_path, entity_type=entity_type, entity_id=entity_id, source_path=Path(path_text))
+        except task_service.AttachmentValidationError as exc:
+            QMessageBox.warning(self, "Ошибка вложения", str(exc))
+            return
+        except task_service.AttachmentStorageError as exc:
+            QMessageBox.warning(self, "Файл недоступен", str(exc))
+            return
+
+        self._load_attachments(entity_type, entity_id)
+
+    def _selected_attachment_id(self) -> Optional[int]:
+        item = self.attachments_list.currentItem()
+        if item is None:
+            return None
+        value = item.data(Qt.ItemDataRole.UserRole)
+        return value if isinstance(value, int) else None
+
+    def open_selected_attachment(self) -> None:
+        attachment_id = self._selected_attachment_id()
+        if attachment_id is None:
+            QMessageBox.information(self, "Открыть вложение", "Выберите вложение из списка")
+            return
+        attachment = task_service.get_attachment(self.db_path, attachment_id)
+        if attachment is None:
+            QMessageBox.warning(self, "Ошибка", "Вложение не найдено")
+            return
+        target = Path(attachment.file_path)
+        if not target.exists():
+            QMessageBox.warning(self, "Файл отсутствует", f"Файл не найден: {target}")
+            return
+        if not os.access(target, os.R_OK):
+            QMessageBox.warning(self, "Файл недоступен", f"Нет доступа к файлу: {target}")
+            return
+        QDesktopServices.openUrl(target.as_uri())
+
+    def delete_selected_attachment(self) -> None:
+        attachment_id = self._selected_attachment_id()
+        if attachment_id is None:
+            QMessageBox.information(self, "Удалить вложение", "Выберите вложение из списка")
+            return
+        if not task_service.delete_attachment(self.db_path, attachment_id):
+            QMessageBox.warning(self, "Ошибка", "Не удалось удалить вложение")
+            return
+        self.on_selection_changed()
 
     def _handle_quick_action(self, action: str) -> None:
         if action == "done":
@@ -1378,7 +1512,7 @@ class TaskQtWindow(QMainWindow):
 
         reminder = self.reminder_input.dateTime().toPython()
         due_datetime = self.due_input.dateTime().toPython() if self.has_due_checkbox.isChecked() else None
-        note = self.note_input.toPlainText()
+        note = self.note_input.toHtml()
         done = self.status_checkbox.isChecked()
         priority = _label_to_priority(self.priority_input.currentText())
 

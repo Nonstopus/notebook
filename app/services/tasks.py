@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import mimetypes
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from app import storage
 
-from app.models import ALLOWED_PRIORITIES, Board, BoardColumn, BoardItem, Subtask, Task
+from app.models import ALLOWED_PRIORITIES, Attachment, Board, BoardColumn, BoardItem, Subtask, Task
 
 
 UNSET_DUE_DATETIME = object()
@@ -14,6 +15,8 @@ UNSET_BOARD_FIELD = object()
 ConvertToSubtaskError = storage.ConvertToSubtaskError
 BoardValidationError = storage.BoardValidationError
 DeadlineValidationError = storage.DeadlineValidationError
+AttachmentValidationError = storage.AttachmentValidationError
+AttachmentStorageError = storage.AttachmentStorageError
 
 def _validate_priority(priority: str) -> str:
     normalized = priority.strip().lower()
@@ -334,3 +337,27 @@ def move_board_item_by_id(db_path: Path, board_item_id: int, column_id: int, pos
 
 def ensure_board_item(db_path: Path, board_id: int, task_id: int) -> Optional[BoardItem]:
     return storage.ensure_board_item(db_path, board_id, task_id)
+
+
+def create_attachment(db_path: Path, *, entity_type: str, entity_id: int, source_path: Path) -> Attachment:
+    guessed_mime = mimetypes.guess_type(source_path.name)[0] or "application/octet-stream"
+    return storage.create_attachment(
+        db_path,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        source_path=source_path,
+        original_name=source_path.name,
+        mime=guessed_mime,
+    )
+
+
+def list_attachments(db_path: Path, *, entity_type: str, entity_id: int) -> List[Attachment]:
+    return storage.list_attachments(db_path, entity_type=entity_type, entity_id=entity_id)
+
+
+def get_attachment(db_path: Path, attachment_id: int) -> Optional[Attachment]:
+    return storage.get_attachment(db_path, attachment_id)
+
+
+def delete_attachment(db_path: Path, attachment_id: int) -> bool:
+    return storage.delete_attachment(db_path, attachment_id)

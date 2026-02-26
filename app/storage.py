@@ -3,13 +3,24 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from html.parser import HTMLParser
+from html import escape
+import os
+import re
+import shutil
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
-from .models import ALLOWED_PRIORITIES, Board, BoardColumn, BoardItem, Subtask, Task
+from .models import ALLOWED_PRIORITIES, Attachment, Board, BoardColumn, BoardItem, Subtask, Task
 
 DB_NAME = "data.db"
 _UNSET = object()
+MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024
+ATTACHMENT_ENTITY_TYPES = ("task", "subtask")
+ALLOWED_NOTE_TAGS = {
+    "p", "br", "strong", "b", "em", "i", "u", "ul", "ol", "li", "h1", "h2", "h3", "blockquote"
+}
+ALLOWED_NOTE_ATTRS = {"blockquote": {"cite"}}
 
 
 class ConvertToSubtaskError(ValueError):
@@ -26,6 +37,60 @@ class PriorityValidationError(ValueError):
 
 class DeadlineValidationError(ValueError):
     """Domain validation error for parent/subtask due datetime consistency."""
+
+
+class AttachmentValidationError(ValueError):
+    """Domain validation error for attachments."""
+
+
+class AttachmentStorageError(FileNotFoundError):
+    """Raised when attachment file cannot be accessed or stored."""
+
+
+class _NoteHTMLSanitizer(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        normalized = tag.lower()
+        if normalized not in ALLOWED_NOTE_TAGS:
+            return
+        allowed_attrs = ALLOWED_NOTE_ATTRS.get(normalized, set())
+        filtered = []
+        for key, value in attrs:
+            if key in allowed_attrs and value is not None:
+                filtered.append(f'{key}="{escape(value, quote=True)}"')
+        attrs_text = f" {' '.join(filtered)}" if filtered else ""
+        self.parts.append(f"<{normalized}{attrs_text}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized = tag.lower()
+        if normalized in ALLOWED_NOTE_TAGS:
+            self.parts.append(f"</{normalized}>")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(escape(data))
+
+    def handle_entityref(self, name: str) -> None:
+        self.parts.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self.parts.append(f"&#{name};")
+
+
+def sanitize_note_html(note: Optional[str]) -> Optional[str]:
+    if note is None:
+        return None
+    content = note.strip()
+    if not content:
+        return ""
+    sanitizer = _NoteHTMLSanitizer()
+    sanitizer.feed(content)
+    sanitizer.close()
+    sanitized = "".join(sanitizer.parts)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    return sanitized
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -184,6 +249,22 @@ def init_db(db_path: Path) -> None:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                CHECK(entity_type IN ('task', 'subtask'))
+            );
+            """
+        )
+
 
 def _row_to_task(row: sqlite3.Row) -> Task:
     return Task(
@@ -288,6 +369,19 @@ def _row_to_board_item(row: sqlite3.Row) -> BoardItem:
     )
 
 
+def _row_to_attachment(row: sqlite3.Row) -> Attachment:
+    return Attachment(
+        id=row["id"],
+        entity_type=row["entity_type"],
+        entity_id=row["entity_id"],
+        file_path=row["file_path"],
+        original_name=row["original_name"],
+        mime=row["mime"],
+        size=row["size"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
 def _validate_non_empty(name: str, field_name: str) -> str:
     value = name.strip()
     if not value:
@@ -307,13 +401,14 @@ def create_task(
     created_at = _now()
     reminder_value = reminder_datetime.isoformat() if reminder_datetime else None
     due_value = due_datetime.isoformat() if due_datetime else None
+    sanitized_note = sanitize_note_html(note)
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO tasks (title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note, priority)
             VALUES (?, 0, ?, ?, ?, ?, ?, ?)
             """,
-            (title, created_at, created_at, reminder_value, due_value, note, validated_priority),
+            (title, created_at, created_at, reminder_value, due_value, sanitized_note, validated_priority),
         )
         task_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -405,7 +500,7 @@ def update_task(
         values.append(due_datetime.isoformat() if due_datetime else None)
     if note is not None:
         updates.append("note = ?")
-        values.append(note)
+        values.append(sanitize_note_html(note))
     if priority is not None:
         updates.append("priority = ?")
         values.append(_validate_priority(priority))
@@ -655,7 +750,7 @@ def update_subtask(
             values.append(due_datetime.isoformat() if due_datetime else None)
         if note is not None:
             updates.append("note = ?")
-            values.append(note)
+            values.append(sanitize_note_html(note))
         if priority is not None:
             updates.append("priority = ?")
             values.append(_validate_priority(priority))
@@ -1256,3 +1351,91 @@ def ensure_board_item(db_path: Path, board_id: int, task_id: int) -> Optional[Bo
             return None
 
     return move_board_item(db_path, board_id, task_id, first_column["id"], position=10**9)
+
+
+def _attachments_root(db_path: Path) -> Path:
+    return db_path.parent / "attachments"
+
+
+def _validate_entity(entity_type: str, entity_id: int, conn: sqlite3.Connection) -> None:
+    if entity_type not in ATTACHMENT_ENTITY_TYPES:
+        raise AttachmentValidationError("entity_type должен быть task или subtask")
+    table = "tasks" if entity_type == "task" else "subtasks"
+    exists = conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (entity_id,)).fetchone()
+    if not exists:
+        raise AttachmentValidationError(f"Сущность {entity_type} #{entity_id} не найдена")
+
+
+def create_attachment(
+    db_path: Path,
+    *,
+    entity_type: str,
+    entity_id: int,
+    source_path: Path,
+    original_name: Optional[str] = None,
+    mime: str = "application/octet-stream",
+) -> Attachment:
+    source = source_path.expanduser()
+    if not source.exists() or not source.is_file():
+        raise AttachmentStorageError(f"Файл не найден: {source}")
+    if not os.access(source, os.R_OK):
+        raise AttachmentStorageError(f"Файл недоступен для чтения: {source}")
+
+    size = source.stat().st_size
+    if size > MAX_ATTACHMENT_SIZE:
+        raise AttachmentValidationError(f"Файл слишком большой: {size} байт (лимит {MAX_ATTACHMENT_SIZE})")
+
+    created_at = _now()
+    with get_conn(db_path) as conn:
+        _validate_entity(entity_type, entity_id, conn)
+        storage_dir = _attachments_root(db_path) / entity_type / str(entity_id)
+        storage_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_name = (original_name or source.name).strip() or source.name
+        target_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+        target_path = storage_dir / target_name
+        shutil.copy2(source, target_path)
+
+        cursor = conn.execute(
+            """
+            INSERT INTO attachments (entity_type, entity_id, file_path, original_name, mime, size, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (entity_type, entity_id, str(target_path), safe_name, mime, size, created_at),
+        )
+        row = conn.execute("SELECT * FROM attachments WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return _row_to_attachment(row)
+
+
+def list_attachments(db_path: Path, *, entity_type: str, entity_id: int) -> List[Attachment]:
+    with get_conn(db_path) as conn:
+        _validate_entity(entity_type, entity_id, conn)
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM attachments
+            WHERE entity_type = ? AND entity_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (entity_type, entity_id),
+        ).fetchall()
+    return [_row_to_attachment(row) for row in rows]
+
+
+def get_attachment(db_path: Path, attachment_id: int) -> Optional[Attachment]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+    return _row_to_attachment(row) if row else None
+
+
+def delete_attachment(db_path: Path, attachment_id: int) -> bool:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT file_path FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+
+    file_path = Path(row["file_path"])
+    if file_path.exists():
+        file_path.unlink()
+    return True
