@@ -92,3 +92,15 @@ class BoardItem:
     task_id: int
     column_id: int
     position: int
+
+
+@dataclass
+class Attachment:
+    id: int
+    entity_type: str
+    entity_id: int
+    file_path: str
+    original_name: str
+    mime: str
+    size: int
+    created_at: datetime

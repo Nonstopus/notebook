@@ -259,3 +259,25 @@ def test_board_service_delete_column_moves_cards_to_target(tmp_path):
     assert [column.name for column in columns] == ["In Progress", "Done"]
     done_items = [item.task_id for item in tasks.list_board_items(db_path, board.id) if item.column_id == done.id]
     assert done_items == [task_a.id, task_b.id]
+
+
+def test_attachment_methods_via_service(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = tasks.create_task(db_path, "Родитель")
+    subtask = tasks.create_subtask(db_path, task.id, "Подзадача")
+    assert subtask is not None
+
+    source_file = tmp_path / "service-attachment.txt"
+    source_file.write_text("payload", encoding="utf-8")
+
+    created_task = tasks.create_attachment(db_path, entity_type="task", entity_id=task.id, source_path=source_file)
+    created_subtask = tasks.create_attachment(db_path, entity_type="subtask", entity_id=subtask.id, source_path=source_file)
+
+    task_list = tasks.list_attachments(db_path, entity_type="task", entity_id=task.id)
+    subtask_list = tasks.list_attachments(db_path, entity_type="subtask", entity_id=subtask.id)
+
+    assert [item.id for item in task_list] == [created_task.id]
+    assert [item.id for item in subtask_list] == [created_subtask.id]
+
+    assert tasks.delete_attachment(db_path, created_subtask.id) is True
+    assert tasks.get_attachment(db_path, created_subtask.id) is None
