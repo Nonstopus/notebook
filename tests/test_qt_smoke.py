@@ -8,7 +8,7 @@ pytest.importorskip("PySide6")
 
 try:
     from PySide6.QtCore import QRectF
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
 except ImportError as exc:  # pragma: no cover - environment guard
     pytest.skip(f"PySide6 runtime unavailable: {exc}", allow_module_level=True)
 
@@ -64,6 +64,47 @@ def test_qt_window_starts(app_instance, tmp_path):
     assert window.tasks_list is not None
     assert window.tasks_list.topLevelItemCount() == 1
     assert window.isVisible()
+
+    window.close()
+
+
+def test_qt_task_card_flow_edit_toggle_delete(app_instance, tmp_path, monkeypatch):
+    db_path = Path(tmp_path / "qt.db")
+    created = tasks.create_task(db_path, "Черновик")
+
+    window = TaskQtWindow(db_path)
+    window.show()
+    app_instance.processEvents()
+
+    window._select_task_in_tree(created.id)
+    app_instance.processEvents()
+
+    window.title_input.setText("Финальный заголовок")
+    window.save_card_btn.click()
+    app_instance.processEvents()
+
+    renamed = tasks.get_task(db_path, created.id)
+    assert renamed is not None
+    assert renamed.title == "Финальный заголовок"
+
+    window.complete_btn.click()
+    app_instance.processEvents()
+    toggled_done = tasks.get_task(db_path, created.id)
+    assert toggled_done is not None
+    assert toggled_done.is_done is True
+
+    window.complete_btn.click()
+    app_instance.processEvents()
+    toggled_back = tasks.get_task(db_path, created.id)
+    assert toggled_back is not None
+    assert toggled_back.is_done is False
+
+    monkeypatch.setattr("app.main_qt.QMessageBox.question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    window.delete_btn.click()
+    app_instance.processEvents()
+
+    assert tasks.get_task(db_path, created.id) is None
+    assert window.tasks_list.topLevelItemCount() == 0
 
     window.close()
 
