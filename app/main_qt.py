@@ -92,6 +92,58 @@ TOKENS = {
     "radii": {"card": 10, "chip": 8},
 }
 
+CARD_HEIGHT_COMFORTABLE = 110
+CARD_HEIGHT_COMPACT = 84
+CARD_PADDING_COMFORTABLE = (8, 6, 8, 6)
+CARD_PADDING_COMPACT = (6, 4, 6, 4)
+
+CARD_LAYOUT_TOKENS = {
+    False: {
+        "height": CARD_HEIGHT_COMFORTABLE,
+        "outer_padding": CARD_PADDING_COMFORTABLE,
+        "left_offset": 12,
+        "top_offset": 10,
+        "title_height": 22,
+        "meta_top_offset": 17,
+        "meta_height": 18,
+        "progress_top_offset": 40,
+        "progress_height": 8,
+        "progress_width_offset": 140,
+        "meta_row_top_offset": 50,
+        "meta_row_height": 44,
+        "meta_first_row_height": 28.0,
+        "meta_second_row_offset": 32.0,
+        "meta_second_row_height": 28.0,
+        "cell_padding_x": 8.0,
+        "label_height": 13.0,
+        "value_height": 18.0,
+        "cell_inner_gap": 3.0,
+        "separator_inset": 2.0,
+    },
+    True: {
+        "height": CARD_HEIGHT_COMPACT,
+        "outer_padding": CARD_PADDING_COMPACT,
+        "left_offset": 10,
+        "top_offset": 8,
+        "title_height": 20,
+        "meta_top_offset": 15,
+        "meta_height": 16,
+        "progress_top_offset": 33,
+        "progress_height": 6,
+        "progress_width_offset": 150,
+        "meta_row_top_offset": 42,
+        "meta_row_height": 32,
+        "meta_first_row_height": 21.0,
+        "meta_second_row_offset": 23.0,
+        "meta_second_row_height": 20.0,
+        "cell_padding_x": 6.0,
+        "label_height": 11.0,
+        "value_height": 14.0,
+        "cell_inner_gap": 1.0,
+        "separator_inset": 1.0,
+    },
+}
+
 SELECTED_BG_COLOR = "#E8EDF3"
 SELECTED_BORDER_COLOR = "#5A6B7D"
 SELECTED_TEXT_COLOR = "#1C232B"
@@ -136,29 +188,36 @@ def _label_to_priority(label: str) -> str:
 class TaskCardDelegate(QStyledItemDelegate):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._density = "comfortable"
+        self._compact = False
 
-    def set_density(self, density: str) -> None:
-        self._density = density
+    def set_compact(self, compact: bool) -> None:
+        self._compact = compact
+
+    def is_compact(self) -> bool:
+        return self._compact
+
+    def _layout(self) -> dict:
+        return CARD_LAYOUT_TOKENS[self._compact]
 
     def sizeHint(self, option, index):
-        base_height = 84 if self._density == "compact" else 110
+        base_height = self._layout()["height"]
         return QSize(option.rect.width(), base_height)
 
     def _meta_section_rects(self, content_rect: QRectF) -> list[QRectF]:
+        layout = self._layout()
         column_gap = 0.0
         narrow_breakpoint = 320.0
 
         if content_rect.width() <= narrow_breakpoint:
-            first_row_height = 28.0
-            second_row_top = content_rect.top() + 32.0
+            first_row_height = layout["meta_first_row_height"]
+            second_row_top = content_rect.top() + layout["meta_second_row_offset"]
             first_row_width = max(0.0, content_rect.width() - 12.0)
             first_col_width = first_row_width / 2
             second_col_width = first_row_width - first_col_width
             return [
                 QRectF(content_rect.left(), content_rect.top(), first_col_width, first_row_height),
                 QRectF(content_rect.left() + first_col_width + 12.0, content_rect.top(), second_col_width, first_row_height),
-                QRectF(content_rect.left(), second_row_top, content_rect.width(), 28.0),
+                QRectF(content_rect.left(), second_row_top, content_rect.width(), layout["meta_second_row_height"]),
             ]
 
         stretches = [2, 1, 1]
@@ -183,7 +242,10 @@ class TaskCardDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        card_rect = option.rect.adjusted(8, 6, -8, -6)
+        layout = self._layout()
+        outer_left, outer_top, outer_right, outer_bottom = layout["outer_padding"]
+
+        card_rect = option.rect.adjusted(outer_left, outer_top, -outer_right, -outer_bottom)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
         focused = bool(option.state & QStyle.StateFlag.State_HasFocus)
@@ -207,8 +269,8 @@ class TaskCardDelegate(QStyledItemDelegate):
 
         text_color = QColor(SELECTED_TEXT_COLOR if selected else TOKENS["colors"]["text_primary"])
         meta_color = QColor("#2B3A48" if selected else TOKENS["colors"]["text_secondary"])
-        left = card_rect.left() + 12
-        top = card_rect.top() + 10
+        left = card_rect.left() + layout["left_offset"]
+        top = card_rect.top() + layout["top_offset"]
 
         done = bool(index.data(ROLE_DONE))
         painter.setPen(Qt.PenStyle.NoPen)
@@ -219,16 +281,27 @@ class TaskCardDelegate(QStyledItemDelegate):
         title_font.setBold(True)
         painter.setFont(title_font)
         painter.setPen(text_color)
-        painter.drawText(QRectF(left + 16, top - 1, card_rect.width() - 40, 22), index.data(Qt.ItemDataRole.DisplayRole) or "")
+        painter.drawText(
+            QRectF(left + 16, top - 1, card_rect.width() - 40, layout["title_height"]),
+            index.data(Qt.ItemDataRole.DisplayRole) or "",
+        )
 
         meta_font = painter.font()
         meta_font.setBold(False)
         painter.setFont(meta_font)
         painter.setPen(meta_color)
-        painter.drawText(QRectF(left + 16, top + 17, card_rect.width() - 40, 18), index.data(ROLE_META) or "")
+        painter.drawText(
+            QRectF(left + 16, top + layout["meta_top_offset"], card_rect.width() - 40, layout["meta_height"]),
+            index.data(ROLE_META) or "",
+        )
 
         progress = int(index.data(ROLE_PROGRESS) or 0)
-        progress_rect = QRectF(left + 16, top + 40, card_rect.width() - 140, 8)
+        progress_rect = QRectF(
+            left + 16,
+            top + layout["progress_top_offset"],
+            card_rect.width() - layout["progress_width_offset"],
+            layout["progress_height"],
+        )
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(TOKENS["colors"]["progress_bg"]))
         painter.drawRoundedRect(progress_rect, 4, 4)
@@ -259,17 +332,17 @@ class TaskCardDelegate(QStyledItemDelegate):
                 "allow_elide": True,
             },
         ]
-        meta_row_rect = QRectF(left + 16, top + 50, card_rect.width() - 32, 44)
+        meta_row_rect = QRectF(left + 16, top + layout["meta_row_top_offset"], card_rect.width() - 32, layout["meta_row_height"])
         section_rects = self._meta_section_rects(meta_row_rect)
-        cell_padding_x = 8.0
-        label_height = 13.0
-        value_height = 18.0
-        cell_inner_gap = 3.0
+        cell_padding_x = layout["cell_padding_x"]
+        label_height = layout["label_height"]
+        value_height = layout["value_height"]
+        cell_inner_gap = layout["cell_inner_gap"]
         label_font = painter.font()
-        label_font.setPointSizeF(max(8.0, label_font.pointSizeF() - 1.0))
+        label_font.setPointSizeF(max(7.0 if self._compact else 8.0, label_font.pointSizeF() - (1.5 if self._compact else 1.0)))
         label_font.setBold(False)
         value_font = painter.font()
-        value_font.setPointSizeF(max(9.0, value_font.pointSizeF()))
+        value_font.setPointSizeF(max(8.0 if self._compact else 9.0, value_font.pointSizeF() - (0.5 if self._compact else 0.0)))
         value_font.setBold(True)
         separator_color = QColor(TOKENS["colors"]["border"])
 
@@ -303,8 +376,8 @@ class TaskCardDelegate(QStyledItemDelegate):
             if section_index < len(sections) - 1 and meta_row_rect.width() > 320:
                 painter.setPen(QPen(separator_color, 1))
                 painter.drawLine(
-                    QPointF(cell_rect.right(), cell_rect.top() + 2),
-                    QPointF(cell_rect.right(), cell_rect.bottom() - 2),
+                    QPointF(cell_rect.right(), cell_rect.top() + layout["separator_inset"]),
+                    QPointF(cell_rect.right(), cell_rect.bottom() - layout["separator_inset"]),
                 )
 
         badge_x = card_rect.right() - 12
@@ -890,6 +963,7 @@ class TaskQtWindow(QMainWindow):
         self._tasks_cache = []
         self._tasks_by_id: Dict[int, object] = {}
         self._is_refreshing_tree = False
+        self._compact_cards = False
         task_service.init_db(self.db_path)
 
         self.setWindowTitle("Task Tracker Desktop (Qt)")
@@ -956,6 +1030,8 @@ class TaskQtWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(QLabel("Задачи и подзадачи", self))
         self.tasks_list = TaskTreeWidget(self)
+        self.tasks_list.setProperty("compact", self._compact_cards)
+        self.tasks_list.setMinimumHeight(0)
         self.tasks_list.setHeaderHidden(True)
         self.tasks_list.setColumnCount(1)
         self.tasks_list.itemSelectionChanged.connect(self.on_selection_changed)
@@ -1224,8 +1300,10 @@ class TaskQtWindow(QMainWindow):
         cursor.insertHtml(f"<{tag}>{selected}</{tag}>")
 
     def _apply_density(self) -> None:
-        density = "compact" if self.density_mode.currentText().lower().startswith("compact") else "comfortable"
-        self.task_delegate.set_density(density)
+        compact = self.density_mode.currentText().lower().startswith("compact")
+        self._compact_cards = compact
+        self.tasks_list.setProperty("compact", self._compact_cards)
+        self.task_delegate.set_compact(self._compact_cards)
         self.tasks_list.doItemsLayout()
         self.tasks_list.viewport().update()
 

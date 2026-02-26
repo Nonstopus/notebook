@@ -13,6 +13,8 @@ except ImportError as exc:  # pragma: no cover - environment guard
     pytest.skip(f"PySide6 runtime unavailable: {exc}", allow_module_level=True)
 
 from app.main_qt import (
+    CARD_HEIGHT_COMFORTABLE,
+    CARD_HEIGHT_COMPACT,
     ROLE_BADGES,
     ROLE_PROGRESS,
     ROLE_SUBTASKS,
@@ -64,6 +66,44 @@ def test_qt_window_starts(app_instance, tmp_path):
     assert window.tasks_list is not None
     assert window.tasks_list.topLevelItemCount() == 1
     assert window.isVisible()
+
+    window.close()
+
+
+
+
+def test_qt_density_switch_reduces_card_height(app_instance, tmp_path):
+    db_path = Path(tmp_path / "qt_density.db")
+    tasks.create_task(db_path, "Плотность")
+
+    window = TaskQtWindow(db_path)
+    window.show()
+    app_instance.processEvents()
+
+    assert window.tasks_list.minimumHeight() == 0
+
+    comfortable_hint = window.task_delegate.sizeHint(
+        window.tasks_list.viewOptions(),
+        window.tasks_list.model().index(0, 0),
+    ).height()
+    assert comfortable_hint == CARD_HEIGHT_COMFORTABLE
+    assert window.task_delegate.is_compact() is False
+
+    window.density_mode.setCurrentText("Compact")
+    app_instance.processEvents()
+
+    compact_hint = window.task_delegate.sizeHint(
+        window.tasks_list.viewOptions(),
+        window.tasks_list.model().index(0, 0),
+    ).height()
+    assert compact_hint == CARD_HEIGHT_COMPACT
+    assert compact_hint < comfortable_hint
+    assert window.task_delegate.is_compact() is True
+    assert bool(window.tasks_list.property("compact")) is True
+
+    window.density_mode.setCurrentText("Comfortable")
+    app_instance.processEvents()
+    assert window.task_delegate.is_compact() is False
 
     window.close()
 
