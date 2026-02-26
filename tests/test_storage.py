@@ -322,6 +322,49 @@ def test_task_links_schema_and_metadata(tmp_path):
     assert row["updated_at"]
 
 
+def test_subtask_links_create_chain_and_prevent_cycles(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Цепочка")
+    first = storage.create_subtask(db_path, task.id, "A")
+    second = storage.create_subtask(db_path, task.id, "B")
+    third = storage.create_subtask(db_path, task.id, "C")
+
+    assert storage.create_subtask_link(db_path, first.id, second.id) is True
+    assert storage.create_subtask_link(db_path, second.id, third.id) is True
+    assert storage.create_subtask_link(db_path, third.id, first.id) is False
+    assert storage.create_subtask_link(db_path, first.id, first.id) is False
+
+    assert storage.list_subtask_links(db_path) == [
+        (first.id, second.id, "depends_on"),
+        (second.id, third.id, "depends_on"),
+    ]
+
+
+def test_subtask_links_cascade_deleted_node(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Каскад")
+    first = storage.create_subtask(db_path, task.id, "A")
+    second = storage.create_subtask(db_path, task.id, "B")
+    third = storage.create_subtask(db_path, task.id, "C")
+
+    assert storage.create_subtask_link(db_path, first.id, second.id) is True
+    assert storage.create_subtask_link(db_path, second.id, third.id) is True
+
+    assert storage.delete_subtask(db_path, second.id) is True
+    assert storage.list_subtask_links(db_path) == []
+
+
+def test_subtask_links_cascade_on_task_delete(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent = storage.create_task(db_path, "Родитель")
+    first = storage.create_subtask(db_path, parent.id, "A")
+    second = storage.create_subtask(db_path, parent.id, "B")
+    assert storage.create_subtask_link(db_path, first.id, second.id) is True
+
+    assert storage.delete_task(db_path, parent.id) is True
+    assert storage.list_subtask_links(db_path) == []
+
+
 def test_board_crud_and_columns_validation(tmp_path):
     db_path = temp_db(tmp_path)
 
@@ -404,4 +447,3 @@ def test_board_validation_position_and_board_isolation(tmp_path):
     storage.move_board_item(db_path, board_a.id, task.id, a_todo.id, 99)
     item = storage.list_board_items(db_path, board_a.id)[0]
     assert item.position == 0
-

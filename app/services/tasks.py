@@ -189,6 +189,42 @@ def delete_task_link(db_path: Path, source_task_id: int, target_task_id: int) ->
     return storage.delete_task_link(db_path, source_task_id, target_task_id)
 
 
+def list_subtask_links(db_path: Path) -> List[Tuple[int, int, str]]:
+    return storage.list_subtask_links(db_path)
+
+
+def create_subtask_link(
+    db_path: Path,
+    source_subtask_id: int,
+    target_subtask_id: int,
+    *,
+    link_type: str = "depends_on",
+    prevent_cycles: bool = True,
+) -> bool:
+    return storage.create_subtask_link(
+        db_path,
+        source_subtask_id,
+        target_subtask_id,
+        link_type=link_type,
+        prevent_cycles=prevent_cycles,
+    )
+
+
+def delete_subtask_link(
+    db_path: Path,
+    source_subtask_id: int,
+    target_subtask_id: int,
+    *,
+    link_type: Optional[str] = None,
+) -> bool:
+    return storage.delete_subtask_link(
+        db_path,
+        source_subtask_id,
+        target_subtask_id,
+        link_type=link_type,
+    )
+
+
 def get_task_layouts(db_path: Path) -> Dict[int, Tuple[float, float]]:
     return storage.get_task_layouts(db_path)
 
