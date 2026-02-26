@@ -66,14 +66,23 @@ def test_subtask_methods_and_progress_via_service(tmp_path):
 
     listed = tasks.list_subtasks(db_path, parent.id)
     assert [item.id for item in listed] == [st1.id, st2.id]
+    assert tasks.get_subtask(db_path, st1.id) is not None
 
-    updated = tasks.update_subtask(db_path, st1.id, title="Новый шаг", is_done=True)
+    updated = tasks.update_subtask(
+        db_path,
+        st1.id,
+        title="Новый шаг",
+        is_done=True,
+        note="Заметка",
+    )
     assert updated is not None
     assert updated.title == "Новый шаг"
     assert updated.is_done is True
+    assert updated.note == "Заметка"
 
     assert tasks.subtask_progress(db_path, parent.id) == (1, 2)
     assert tasks.delete_subtask(db_path, st2.id) is True
+    assert tasks.get_subtask(db_path, st2.id) is None
     assert tasks.subtask_progress(db_path, parent.id) == (1, 1)
 
 

@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from .models import ItemKind, TreeItemRef
 from .services import tasks as task_service
 from .storage import DB_NAME
 
@@ -52,6 +53,7 @@ except ImportError as exc:  # pragma: no cover - runtime guard for optional GUI 
 DB_PATH = Path(DB_NAME)
 NODE_WIDTH = 180
 NODE_HEIGHT = 70
+ROLE_ITEM_REF = Qt.ItemDataRole.UserRole
 ROLE_META = Qt.ItemDataRole.UserRole + 1
 ROLE_PROGRESS = Qt.ItemDataRole.UserRole + 2
 ROLE_BADGES = Qt.ItemDataRole.UserRole + 3
@@ -500,6 +502,7 @@ class TaskQtWindow(QMainWindow):
         self.tasks_list.setHeaderHidden(True)
         self.tasks_list.setColumnCount(1)
         self.tasks_list.itemSelectionChanged.connect(self.on_selection_changed)
+        self.tasks_list.itemActivated.connect(self._open_selected_item_card)
         self.tasks_list.setMouseTracking(True)
         self.tasks_list.setIndentation(26)
         self.tasks_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -537,7 +540,9 @@ class TaskQtWindow(QMainWindow):
 
         right_panel = QWidget(self)
         right_layout = QVBoxLayout(right_panel)
-        right_layout.addWidget(QLabel("Карточка задачи", self))
+        right_layout.addWidget(QLabel("Карточка элемента", self))
+        self.breadcrumbs_label = QLabel("—", self)
+        right_layout.addWidget(self.breadcrumbs_label)
 
         form = QFormLayout()
         self.title_input = QLineEdit(self)
@@ -602,7 +607,7 @@ class TaskQtWindow(QMainWindow):
         self.refresh_tasks()
 
     def refresh_tasks(self) -> None:
-        selected = self._selected_task_id()
+        selected_ref = self._selected_item_ref()
         query = self.search_input.text().strip() if hasattr(self, "search_input") else ""
         status_value = self.status_filter.currentText() if hasattr(self, "status_filter") else "Все"
         is_done_filter = None
@@ -650,7 +655,7 @@ class TaskQtWindow(QMainWindow):
             meta = f"ID #{task.id} · {done_subtasks}/{total_subtasks} выполнено"
 
             root_item = QTreeWidgetItem([task.title])
-            root_item.setData(0, Qt.ItemDataRole.UserRole, task.id)
+            root_item.setData(0, ROLE_ITEM_REF, TreeItemRef(kind=ItemKind.TASK, id=task.id, level=0))
             root_item.setData(0, ROLE_META, meta)
             root_item.setData(0, ROLE_PROGRESS, percent)
             root_item.setData(0, ROLE_DEADLINE, deadline)
@@ -670,58 +675,67 @@ class TaskQtWindow(QMainWindow):
             subtasks = task_service.list_subtasks(self.db_path, task.id)
             for subtask in subtasks:
                 child = QTreeWidgetItem([f"↳ {subtask.title}"])
-                child.setData(0, Qt.ItemDataRole.UserRole, ("subtask", subtask.id))
+                child.setData(0, ROLE_ITEM_REF, TreeItemRef(kind=ItemKind.SUBTASK, id=subtask.id, level=1, parent_task_id=task.id))
                 child.setData(0, ROLE_META, f"Подзадача #{subtask.id}")
                 child.setData(0, ROLE_PROGRESS, 100 if subtask.is_done else 0)
-                child.setData(0, ROLE_DEADLINE, "—")
+                child_deadline = subtask.due_datetime or subtask.reminder_datetime
+                child.setData(0, ROLE_DEADLINE, child_deadline.strftime("%d.%m %H:%M") if child_deadline else "—")
                 child.setData(0, ROLE_SUBTASKS, 0)
                 child.setData(0, ROLE_DONE, subtask.is_done)
                 child.setData(0, ROLE_BADGES, [("SUB", "#6A7A8D")])
                 root_item.addChild(child)
 
         self.tasks_list.expandAll()
-        if selected is not None:
-            self._select_task_in_tree(selected)
+        if selected_ref is not None:
+            self._select_item_in_tree(selected_ref)
         elif self.tasks_list.topLevelItemCount() > 0:
             self.tasks_list.setCurrentItem(self.tasks_list.topLevelItem(0))
         else:
             self._clear_card()
 
-    def _selected_task_id(self) -> Optional[int]:
+    def _selected_item_ref(self) -> Optional[TreeItemRef]:
         item = self.tasks_list.currentItem()
-        return self._task_id_from_item(item)
-
-    def _task_id_from_item(self, item: Optional[QTreeWidgetItem]) -> Optional[int]:
         if item is None:
             return None
-        task_ref = item.data(0, Qt.ItemDataRole.UserRole)
-        if isinstance(task_ref, int):
-            return task_ref
-        if isinstance(task_ref, tuple) and len(task_ref) == 2 and task_ref[0] == "subtask":
-            parent_item = item.parent()
-            if parent_item:
-                parent_task_id = parent_item.data(0, Qt.ItemDataRole.UserRole)
-                if isinstance(parent_task_id, int):
-                    return parent_task_id
-        return None
+        item_ref = item.data(0, ROLE_ITEM_REF)
+        return item_ref if isinstance(item_ref, TreeItemRef) else None
+
+    def _selected_task_id(self) -> Optional[int]:
+        item_ref = self._selected_item_ref()
+        if item_ref is None:
+            return None
+        if item_ref.kind == ItemKind.TASK:
+            return item_ref.id
+        return item_ref.parent_task_id
 
     def _select_task_in_tree(self, task_id: int) -> None:
-        for index in range(self.tasks_list.topLevelItemCount()):
-            item = self.tasks_list.topLevelItem(index)
-            if item.data(0, Qt.ItemDataRole.UserRole) == task_id:
-                self.tasks_list.setCurrentItem(item)
-                return
+        self._select_item_in_tree(TreeItemRef(kind=ItemKind.TASK, id=task_id, level=0))
+
+    def _select_item_in_tree(self, item_ref: TreeItemRef) -> None:
+        if item_ref.kind == ItemKind.TASK:
+            for index in range(self.tasks_list.topLevelItemCount()):
+                item = self.tasks_list.topLevelItem(index)
+                current_ref = item.data(0, ROLE_ITEM_REF)
+                if isinstance(current_ref, TreeItemRef) and current_ref.kind == ItemKind.TASK and current_ref.id == item_ref.id:
+                    self.tasks_list.setCurrentItem(item)
+                    self.tasks_list.scrollToItem(item)
+                    return
+            return
+        if item_ref.parent_task_id is None:
+            return
+        self._focus_subtask_in_tree(item_ref.parent_task_id, item_ref.id)
 
     def _focus_subtask_in_tree(self, parent_task_id: int, subtask_id: int) -> None:
         for index in range(self.tasks_list.topLevelItemCount()):
             parent_item = self.tasks_list.topLevelItem(index)
-            if parent_item.data(0, Qt.ItemDataRole.UserRole) != parent_task_id:
+            parent_ref = parent_item.data(0, ROLE_ITEM_REF)
+            if not isinstance(parent_ref, TreeItemRef) or parent_ref.id != parent_task_id:
                 continue
             parent_item.setExpanded(True)
             for child_index in range(parent_item.childCount()):
                 child_item = parent_item.child(child_index)
-                ref = child_item.data(0, Qt.ItemDataRole.UserRole)
-                if isinstance(ref, tuple) and len(ref) == 2 and ref[0] == "subtask" and ref[1] == subtask_id:
+                child_ref = child_item.data(0, ROLE_ITEM_REF)
+                if isinstance(child_ref, TreeItemRef) and child_ref.kind == ItemKind.SUBTASK and child_ref.id == subtask_id:
                     self.tasks_list.setCurrentItem(child_item)
                     self.tasks_list.scrollToItem(child_item)
                     return
@@ -735,33 +749,59 @@ class TaskQtWindow(QMainWindow):
             return None
         return self._tasks_by_id.get(task_id) or task_service.get_task(self.db_path, task_id)
 
-    def _selected_subtask_id(self) -> Optional[int]:
-        item = self.tasks_list.currentItem()
-        if item is None:
+    def _selected_subtask(self):
+        item_ref = self._selected_item_ref()
+        if item_ref is None or item_ref.kind != ItemKind.SUBTASK:
             return None
-        task_ref = item.data(0, Qt.ItemDataRole.UserRole)
-        if isinstance(task_ref, tuple) and len(task_ref) == 2 and task_ref[0] == "subtask":
-            return task_ref[1]
+        return task_service.get_subtask(self.db_path, item_ref.id)
+
+    def _selected_subtask_id(self) -> Optional[int]:
+        item_ref = self._selected_item_ref()
+        if item_ref and item_ref.kind == ItemKind.SUBTASK:
+            return item_ref.id
         return None
 
     def _clear_card(self) -> None:
+        self.breadcrumbs_label.setText("—")
         self.title_input.setText("")
+        self.status_checkbox.setText("Элемент выполнен")
         self.status_checkbox.setChecked(False)
         self.reminder_input.setDateTime(datetime.now())
         self.note_input.setPlainText("")
 
+    def _open_selected_item_card(self) -> None:
+        self.on_selection_changed()
+
     def on_selection_changed(self) -> None:
+        item_ref = self._selected_item_ref()
+        if item_ref is None:
+            self._clear_card()
+            return
+
+        if item_ref.kind == ItemKind.SUBTASK:
+            subtask = self._selected_subtask()
+            parent = self._selected_task()
+            if subtask is None or parent is None:
+                self._clear_card()
+                return
+            self.breadcrumbs_label.setText(f"{parent.title} > {subtask.title}")
+            self.title_input.setText(subtask.title)
+            self.status_checkbox.setText("Подзадача выполнена")
+            self.status_checkbox.setChecked(subtask.is_done)
+            self.note_input.setPlainText(subtask.note or "")
+            self.reminder_input.setDateTime(subtask.reminder_datetime or datetime.now())
+            return
+
         task = self._selected_task()
         if task is None:
             self._clear_card()
             return
+        self.breadcrumbs_label.setText(task.title)
         self.title_input.setText(task.title)
+        self.status_checkbox.setText("Задача выполнена")
         self.status_checkbox.setChecked(task.is_done)
         self.note_input.setPlainText(task.note or "")
-        if task.reminder_datetime:
-            self.reminder_input.setDateTime(task.reminder_datetime)
-        else:
-            self.reminder_input.setDateTime(datetime.now())
+        self.reminder_input.setDateTime(task.reminder_datetime or datetime.now())
 
     def add_task(self) -> None:
         title, ok = QInputDialog.getText(self, "Новая задача", "Введите название задачи")
@@ -778,30 +818,49 @@ class TaskQtWindow(QMainWindow):
         self._select_task_in_tree(created.id)
 
     def save_selected_task(self) -> None:
-        task = self._selected_task()
-        if task is None:
-            QMessageBox.information(self, "Выберите задачу", "Выберите задачу для редактирования")
+        item_ref = self._selected_item_ref()
+        if item_ref is None:
+            QMessageBox.information(self, "Выберите задачу", "Выберите задачу или подзадачу для редактирования")
             return
 
         title = self.title_input.text().strip()
         if not title:
-            QMessageBox.information(self, "Пустой заголовок", "Введите название задачи")
+            QMessageBox.information(self, "Пустой заголовок", "Введите название")
             return
 
         reminder = self.reminder_input.dateTime().toPython()
+        note = self.note_input.toPlainText()
+        done = self.status_checkbox.isChecked()
+
+        if item_ref.kind == ItemKind.SUBTASK:
+            updated = task_service.update_subtask(
+                self.db_path,
+                item_ref.id,
+                title=title,
+                is_done=done,
+                reminder_datetime=reminder,
+                note=note,
+            )
+            if not updated:
+                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить подзадачу")
+                return
+            self.refresh_tasks()
+            self._focus_subtask_in_tree(updated.task_id, updated.id)
+            return
+
         updated = task_service.update_task(
             self.db_path,
-            task.id,
+            item_ref.id,
             title=title,
-            is_done=self.status_checkbox.isChecked(),
+            is_done=done,
             reminder_datetime=reminder,
-            note=self.note_input.toPlainText(),
+            note=note,
         )
         if not updated:
             QMessageBox.warning(self, "Ошибка", "Не удалось сохранить задачу")
             return
         self.refresh_tasks()
-        self._select_task_in_tree(task.id)
+        self._select_task_in_tree(updated.id)
 
     def add_subtask(self) -> None:
         task = self._selected_task()
@@ -847,13 +906,22 @@ class TaskQtWindow(QMainWindow):
         self._select_task_in_tree(task.id)
 
     def clear_selected_reminder(self) -> None:
-        task = self._selected_task()
-        if task is None:
-            QMessageBox.information(self, "Выберите задачу", "Выберите задачу для обновления")
+        item_ref = self._selected_item_ref()
+        if item_ref is None:
+            QMessageBox.information(self, "Выберите задачу", "Выберите задачу или подзадачу для обновления")
             return
-        task_service.update_task(self.db_path, task.id, reminder_datetime=None)
+        if item_ref.kind == ItemKind.SUBTASK:
+            updated = task_service.update_subtask(self.db_path, item_ref.id, reminder_datetime=None)
+            if not updated:
+                QMessageBox.warning(self, "Ошибка", "Не удалось очистить напоминание подзадачи")
+                return
+            self.refresh_tasks()
+            self._focus_subtask_in_tree(updated.task_id, updated.id)
+            return
+
+        task_service.update_task(self.db_path, item_ref.id, reminder_datetime=None)
         self.refresh_tasks()
-        self._select_task_in_tree(task.id)
+        self._select_task_in_tree(item_ref.id)
 
     def delete_task(self) -> None:
         subtask_id = self._selected_subtask_id()
