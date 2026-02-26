@@ -104,11 +104,11 @@ def main() -> None:
     if args.command == "convert-to-subtask":
         try:
             subtask = task_service.convert_task_to_subtask(args.db, args.task_id, args.parent_task_id)
-        except ValueError:
-            print("Нельзя сделать задачу подзадачей самой себя")
+        except task_service.ConvertToSubtaskError as exc:
+            print(str(exc))
             return
         if not subtask:
-            print("Задача не найдена")
+            print("Не удалось преобразовать задачу")
             return
         print(
             f"Задача #{args.task_id} преобразована в подзадачу #{subtask.id} для задачи #{args.parent_task_id}"

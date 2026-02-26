@@ -31,6 +31,7 @@ try:
         QListWidget,
         QListWidgetItem,
         QMainWindow,
+        QMenu,
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
@@ -227,6 +228,70 @@ class TaskGraphDialog(QDialog):
         self.refresh_graph()
 
 
+class TaskPickerDialog(QDialog):
+    def __init__(self, tasks: list, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._tasks = tasks
+        self._filtered_tasks = list(tasks)
+        self.selected_task_id: Optional[int] = None
+
+        self.setWindowTitle("Выберите родительскую задачу")
+        self.resize(520, 420)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Поиск", self))
+
+        self.search_input = QLineEdit(self)
+        self.search_input.setPlaceholderText("ID или название")
+        self.search_input.textChanged.connect(self._apply_filter)
+        layout.addWidget(self.search_input)
+
+        self.list_widget = QListWidget(self)
+        self.list_widget.itemDoubleClicked.connect(self._accept_item)
+        layout.addWidget(self.list_widget)
+
+        actions = QHBoxLayout()
+        ok_btn = QPushButton("Выбрать", self)
+        ok_btn.clicked.connect(self._accept_current)
+        actions.addWidget(ok_btn)
+
+        cancel_btn = QPushButton("Отмена", self)
+        cancel_btn.clicked.connect(self.reject)
+        actions.addWidget(cancel_btn)
+        layout.addLayout(actions)
+
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        query = self.search_input.text().strip().lower()
+        self._filtered_tasks = []
+        self.list_widget.clear()
+
+        for task in self._tasks:
+            label = f"#{task.id} {task.title}"
+            if query and query not in label.lower():
+                continue
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, task.id)
+            self.list_widget.addItem(item)
+            self._filtered_tasks.append(task)
+
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
+
+    def _accept_item(self, item: QListWidgetItem) -> None:
+        self.selected_task_id = item.data(Qt.ItemDataRole.UserRole)
+        self.accept()
+
+    def _accept_current(self) -> None:
+        item = self.list_widget.currentItem()
+        if not item:
+            QMessageBox.information(self, "Задачи не найдены", "Выберите родительскую задачу из списка")
+            return
+        self.selected_task_id = item.data(Qt.ItemDataRole.UserRole)
+        self.accept()
+
+
 class TaskQtWindow(QMainWindow):
     def __init__(self, db_path: Path):
         super().__init__()
@@ -294,6 +359,8 @@ class TaskQtWindow(QMainWindow):
         self.tasks_list.setHeaderLabels(["Задача", "Прогресс"])
         self.tasks_list.itemSelectionChanged.connect(self.on_selection_changed)
         self.tasks_list.setAlternatingRowColors(True)
+        self.tasks_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tasks_list.customContextMenuRequested.connect(self._show_task_context_menu)
         left_layout.addWidget(self.tasks_list)
 
         left_actions = QHBoxLayout()
@@ -305,7 +372,7 @@ class TaskQtWindow(QMainWindow):
         delete_btn.clicked.connect(self.delete_task)
         left_actions.addWidget(delete_btn)
 
-        convert_btn = QPushButton("Сделать подзадачей", self)
+        convert_btn = QPushButton("Сделать подзадачей…", self)
         convert_btn.clicked.connect(self.convert_task_to_subtask)
         left_actions.addWidget(convert_btn)
 
@@ -424,7 +491,7 @@ class TaskQtWindow(QMainWindow):
             for subtask in subtasks:
                 st_text = f"[{'✓' if subtask.is_done else ' '}] {subtask.title}"
                 child = QTreeWidgetItem([st_text, "subtask"])
-                child.setDisabled(True)
+                child.setData(0, Qt.ItemDataRole.UserRole, ("subtask", subtask.id))
                 root_item.addChild(child)
 
         self.tasks_list.expandAll()
@@ -437,12 +504,21 @@ class TaskQtWindow(QMainWindow):
 
     def _selected_task_id(self) -> Optional[int]:
         item = self.tasks_list.currentItem()
-        if not item:
+        return self._task_id_from_item(item)
+
+    def _task_id_from_item(self, item: Optional[QTreeWidgetItem]) -> Optional[int]:
+        if item is None:
             return None
-        task_id = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(task_id, int):
-            return None
-        return task_id
+        task_ref = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(task_ref, int):
+            return task_ref
+        if isinstance(task_ref, tuple) and len(task_ref) == 2 and task_ref[0] == "subtask":
+            parent_item = item.parent()
+            if parent_item:
+                parent_task_id = parent_item.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(parent_task_id, int):
+                    return parent_task_id
+        return None
 
     def _select_task_in_tree(self, task_id: int) -> None:
         for index in range(self.tasks_list.topLevelItemCount()):
@@ -450,6 +526,23 @@ class TaskQtWindow(QMainWindow):
             if item.data(0, Qt.ItemDataRole.UserRole) == task_id:
                 self.tasks_list.setCurrentItem(item)
                 return
+
+    def _focus_subtask_in_tree(self, parent_task_id: int, subtask_id: int) -> None:
+        for index in range(self.tasks_list.topLevelItemCount()):
+            parent_item = self.tasks_list.topLevelItem(index)
+            if parent_item.data(0, Qt.ItemDataRole.UserRole) != parent_task_id:
+                continue
+            parent_item.setExpanded(True)
+            for child_index in range(parent_item.childCount()):
+                child_item = parent_item.child(child_index)
+                ref = child_item.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(ref, tuple) and len(ref) == 2 and ref[0] == "subtask" and ref[1] == subtask_id:
+                    self.tasks_list.setCurrentItem(child_item)
+                    self.tasks_list.scrollToItem(child_item)
+                    return
+            self.tasks_list.setCurrentItem(parent_item)
+            self.tasks_list.scrollToItem(parent_item)
+            return
 
     def _selected_task(self):
         task_id = self._selected_task_id()
@@ -553,26 +646,38 @@ class TaskQtWindow(QMainWindow):
             )
             return
 
-        option_labels = [f"#{task.id} {task.title}" for task in parent_options]
-        selected_label, ok = QInputDialog.getItem(
-            self,
-            "Сделать подзадачей",
-            "Выберите родительскую задачу",
-            option_labels,
-            0,
-            False,
-        )
-        if not ok:
+        dialog = TaskPickerDialog(parent_options, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.selected_task_id is None:
             return
 
-        selected_index = option_labels.index(selected_label)
-        parent_task = parent_options[selected_index]
-        converted = task_service.convert_task_to_subtask(self.db_path, child_task.id, parent_task.id)
+        try:
+            converted = task_service.convert_task_to_subtask(
+                self.db_path,
+                child_task.id,
+                dialog.selected_task_id,
+            )
+        except task_service.ConvertToSubtaskError as exc:
+            QMessageBox.warning(self, "Ошибка преобразования", str(exc))
+            return
+
         if not converted:
             QMessageBox.warning(self, "Ошибка", "Не удалось преобразовать задачу")
             return
 
         self.refresh_tasks()
+        self._focus_subtask_in_tree(dialog.selected_task_id, converted.id)
+
+    def _show_task_context_menu(self, pos) -> None:
+        item = self.tasks_list.itemAt(pos)
+        if item is None:
+            return
+        self.tasks_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        convert_action = menu.addAction("Сделать подзадачей…")
+        chosen = menu.exec(self.tasks_list.viewport().mapToGlobal(pos))
+        if chosen == convert_action:
+            self.convert_task_to_subtask()
 
     def open_graph_mode(self) -> None:
         dialog = TaskGraphDialog(self.db_path, self)
