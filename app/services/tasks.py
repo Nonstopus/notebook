@@ -13,6 +13,7 @@ UNSET_DUE_DATETIME = object()
 UNSET_BOARD_FIELD = object()
 ConvertToSubtaskError = storage.ConvertToSubtaskError
 BoardValidationError = storage.BoardValidationError
+DeadlineValidationError = storage.DeadlineValidationError
 
 def _validate_priority(priority: str) -> str:
     normalized = priority.strip().lower()
@@ -101,9 +102,21 @@ def due_reminders(db_path: Path, now: Optional[datetime] = None) -> Iterable[Tas
     return storage.due_reminders(db_path, now=now)
 
 
-def create_subtask(db_path: Path, task_id: int, title: str, priority: str = "medium") -> Optional[Subtask]:
+def create_subtask(
+    db_path: Path,
+    task_id: int,
+    title: str,
+    priority: str = "medium",
+    due_datetime: Optional[datetime] = None,
+) -> Optional[Subtask]:
     validated_priority = _validate_priority(priority)
-    return storage.create_subtask(db_path, task_id, title, validated_priority)
+    return storage.create_subtask(
+        db_path,
+        task_id,
+        title,
+        validated_priority,
+        due_datetime=due_datetime,
+    )
 
 
 def list_subtasks(db_path: Path, task_id: int) -> List[Subtask]:

@@ -24,6 +24,10 @@ class PriorityValidationError(ValueError):
     """Domain validation error for task and subtask priority."""
 
 
+class DeadlineValidationError(ValueError):
+    """Domain validation error for parent/subtask due datetime consistency."""
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -219,6 +223,38 @@ def _validate_priority(priority: str) -> str:
     return normalized
 
 
+def _ensure_subtask_due_within_parent(
+    parent_due_datetime: Optional[datetime],
+    subtask_due_datetime: Optional[datetime],
+) -> None:
+    if parent_due_datetime is None or subtask_due_datetime is None:
+        return
+    if subtask_due_datetime > parent_due_datetime:
+        raise DeadlineValidationError(
+            "Дедлайн подзадачи не может быть позже дедлайна родительской задачи"
+        )
+
+
+def _ensure_parent_due_allows_subtasks(conn: sqlite3.Connection, task_id: int, parent_due_datetime: datetime) -> None:
+    conflict = conn.execute(
+        """
+        SELECT id, title, due_datetime
+        FROM subtasks
+        WHERE task_id = ?
+          AND due_datetime IS NOT NULL
+          AND due_datetime > ?
+        ORDER BY due_datetime DESC
+        LIMIT 1
+        """,
+        (task_id, parent_due_datetime.isoformat()),
+    ).fetchone()
+    if conflict:
+        raise DeadlineValidationError(
+            "Нельзя установить дедлайн задачи раньше дедлайна подзадачи "
+            f"'{conflict['title']}' ({conflict['due_datetime']})"
+        )
+
+
 def _now() -> str:
     return datetime.utcnow().isoformat()
 
@@ -362,6 +398,9 @@ def update_task(
         updates.append("reminder_datetime = ?")
         values.append(reminder_datetime.isoformat() if reminder_datetime else None)
     if due_datetime is not _UNSET:
+        if due_datetime is not None:
+            with get_conn(db_path) as conn:
+                _ensure_parent_due_allows_subtasks(conn, task_id, due_datetime)
         updates.append("due_datetime = ?")
         values.append(due_datetime.isoformat() if due_datetime else None)
     if note is not None:
@@ -397,10 +436,10 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
 
     with get_conn(db_path) as conn:
         child_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (child_task_id,)).fetchone()
-        parent_exists = conn.execute("SELECT id FROM tasks WHERE id = ?", (parent_task_id,)).fetchone()
+        parent_row = conn.execute("SELECT id, due_datetime FROM tasks WHERE id = ?", (parent_task_id,)).fetchone()
         if not child_row:
             raise ConvertToSubtaskError(f"Задача #{child_task_id} не найдена")
-        if not parent_exists:
+        if not parent_row:
             raise ConvertToSubtaskError(f"Родительская задача #{parent_task_id} не найдена")
 
         child_subtasks_count = conn.execute(
@@ -423,6 +462,10 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
             raise ConvertToSubtaskError(
                 "Нельзя конвертировать задачу, участвующую в связях графа: сначала удалите связи"
             )
+
+        parent_due = datetime.fromisoformat(parent_row["due_datetime"]) if parent_row["due_datetime"] else None
+        child_due = datetime.fromisoformat(child_row["due_datetime"]) if child_row["due_datetime"] else None
+        _ensure_subtask_due_within_parent(parent_due, child_due)
 
         now = _now()
         next_position = conn.execute(
@@ -460,11 +503,20 @@ def convert_task_to_subtask(db_path: Path, child_task_id: int, parent_task_id: i
     return _row_to_subtask(subtask_row)
 
 
-def create_subtask(db_path: Path, task_id: int, title: str, priority: str = "medium") -> Optional[Subtask]:
-    if not get_task(db_path, task_id):
+def create_subtask(
+    db_path: Path,
+    task_id: int,
+    title: str,
+    priority: str = "medium",
+    due_datetime: Optional[datetime] = None,
+) -> Optional[Subtask]:
+    parent_task = get_task(db_path, task_id)
+    if not parent_task:
         return None
+    _ensure_subtask_due_within_parent(parent_task.due_datetime, due_datetime)
     validated_priority = _validate_priority(priority)
     created_at = _now()
+    due_value = due_datetime.isoformat() if due_datetime else None
     with get_conn(db_path) as conn:
         next_position = conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = ?",
@@ -475,9 +527,9 @@ def create_subtask(db_path: Path, task_id: int, title: str, priority: str = "med
             INSERT INTO subtasks (
                 task_id, position, title, is_done, created_at, updated_at, reminder_datetime, due_datetime, note, priority
             )
-            VALUES (?, ?, ?, 0, ?, ?, NULL, NULL, NULL, ?)
+            VALUES (?, ?, ?, 0, ?, ?, NULL, ?, NULL, ?)
             """,
-            (task_id, next_position, title, created_at, created_at, validated_priority),
+            (task_id, next_position, title, created_at, created_at, due_value, validated_priority),
         )
         subtask_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
@@ -580,6 +632,12 @@ def update_subtask(
         row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
         if not row:
             return None
+        parent_row = conn.execute("SELECT due_datetime FROM tasks WHERE id = ?", (row["task_id"],)).fetchone()
+        parent_due = (
+            datetime.fromisoformat(parent_row["due_datetime"])
+            if parent_row and parent_row["due_datetime"]
+            else None
+        )
         updates: List[str] = []
         values: List[object] = []
         if title is not None:
@@ -592,6 +650,7 @@ def update_subtask(
             updates.append("reminder_datetime = ?")
             values.append(reminder_datetime.isoformat() if reminder_datetime else None)
         if due_datetime is not _UNSET:
+            _ensure_subtask_due_within_parent(parent_due, due_datetime)
             updates.append("due_datetime = ?")
             values.append(due_datetime.isoformat() if due_datetime else None)
         if note is not None:
