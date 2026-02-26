@@ -102,6 +102,21 @@ def init_db(db_path: Path) -> None:
 
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS subtask_links (
+                from_subtask_id INTEGER NOT NULL,
+                to_subtask_id INTEGER NOT NULL,
+                link_type TEXT NOT NULL DEFAULT 'depends_on',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (from_subtask_id, to_subtask_id, link_type),
+                FOREIGN KEY(from_subtask_id) REFERENCES subtasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(to_subtask_id) REFERENCES subtasks(id) ON DELETE CASCADE,
+                CHECK (from_subtask_id != to_subtask_id)
+            );
+            """
+        )
+
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS task_layout (
                 task_id INTEGER PRIMARY KEY,
                 x REAL NOT NULL,
@@ -601,6 +616,28 @@ def _would_create_cycle(db_path: Path, source_task_id: int, target_task_id: int)
     return False
 
 
+def _would_create_subtask_cycle(db_path: Path, source_subtask_id: int, target_subtask_id: int) -> bool:
+    graph: Dict[int, List[int]] = {}
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT from_subtask_id, to_subtask_id FROM subtask_links WHERE link_type = 'depends_on'"
+        ).fetchall()
+    for row in rows:
+        graph.setdefault(row["from_subtask_id"], []).append(row["to_subtask_id"])
+
+    stack = [target_subtask_id]
+    visited = set()
+    while stack:
+        node = stack.pop()
+        if node == source_subtask_id:
+            return True
+        if node in visited:
+            continue
+        visited.add(node)
+        stack.extend(graph.get(node, []))
+    return False
+
+
 def list_task_links(db_path: Path) -> List[Tuple[int, int]]:
     with get_conn(db_path) as conn:
         rows = conn.execute(
@@ -649,6 +686,69 @@ def delete_task_link(db_path: Path, source_task_id: int, target_task_id: int) ->
             "DELETE FROM task_links WHERE from_task_id = ? AND to_task_id = ?",
             (source_task_id, target_task_id),
         )
+    return cursor.rowcount > 0
+
+
+def list_subtask_links(db_path: Path) -> List[Tuple[int, int, str]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT from_subtask_id, to_subtask_id, link_type
+            FROM subtask_links
+            ORDER BY from_subtask_id, to_subtask_id, link_type
+            """
+        ).fetchall()
+    return [(row["from_subtask_id"], row["to_subtask_id"], row["link_type"]) for row in rows]
+
+
+def create_subtask_link(
+    db_path: Path,
+    source_subtask_id: int,
+    target_subtask_id: int,
+    *,
+    link_type: str = "depends_on",
+    prevent_cycles: bool = True,
+) -> bool:
+    if source_subtask_id == target_subtask_id:
+        return False
+    if not get_subtask(db_path, source_subtask_id) or not get_subtask(db_path, target_subtask_id):
+        return False
+    if link_type == "depends_on" and prevent_cycles:
+        if _would_create_subtask_cycle(db_path, source_subtask_id, target_subtask_id):
+            return False
+
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO subtask_links (from_subtask_id, to_subtask_id, link_type, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (source_subtask_id, target_subtask_id, link_type, _now()),
+        )
+    return cursor.rowcount > 0
+
+
+def delete_subtask_link(
+    db_path: Path,
+    source_subtask_id: int,
+    target_subtask_id: int,
+    *,
+    link_type: Optional[str] = None,
+) -> bool:
+    with get_conn(db_path) as conn:
+        if link_type is None:
+            cursor = conn.execute(
+                "DELETE FROM subtask_links WHERE from_subtask_id = ? AND to_subtask_id = ?",
+                (source_subtask_id, target_subtask_id),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                DELETE FROM subtask_links
+                WHERE from_subtask_id = ? AND to_subtask_id = ? AND link_type = ?
+                """,
+                (source_subtask_id, target_subtask_id, link_type),
+            )
     return cursor.rowcount > 0
 
 
