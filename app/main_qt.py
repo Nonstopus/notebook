@@ -38,6 +38,7 @@ try:
         QPlainTextEdit,
         QPushButton,
         QSplitter,
+        QSizePolicy,
         QStyledItemDelegate,
         QStyle,
         QTreeWidget,
@@ -119,6 +120,20 @@ class TaskCardDelegate(QStyledItemDelegate):
 
     def _meta_section_rects(self, content_rect: QRectF) -> list[QRectF]:
         column_gap = 14.0
+        narrow_breakpoint = 320.0
+
+        if content_rect.width() <= narrow_breakpoint:
+            first_row_height = 14.0
+            second_row_top = content_rect.top() + 18.0
+            first_row_width = max(0.0, content_rect.width() - column_gap)
+            first_col_width = first_row_width / 2
+            second_col_width = first_row_width - first_col_width
+            return [
+                QRectF(content_rect.left(), content_rect.top(), first_col_width, first_row_height),
+                QRectF(content_rect.left() + first_col_width + column_gap, content_rect.top(), second_col_width, first_row_height),
+                QRectF(content_rect.left(), second_row_top, content_rect.width(), first_row_height),
+            ]
+
         stretches = [2, 1, 1]
         total_gap = column_gap * (len(stretches) - 1)
         available_width = max(0.0, content_rect.width() - total_gap)
@@ -198,9 +213,27 @@ class TaskCardDelegate(QStyledItemDelegate):
         )
 
         sections = [
-            {"label": "Срок", "value": str(index.data(ROLE_DEADLINE) or "—"), "color": QColor(index.data(ROLE_DEADLINE_COLOR) or text_color.name())},
-            {"label": "Подзадачи", "value": str(index.data(ROLE_SUBTASKS) or 0), "color": text_color},
-            {"label": "Приоритет", "value": str(index.data(ROLE_PRIORITY) or "Обычный"), "color": text_color},
+            {
+                "label": "Срок",
+                "value": str(index.data(ROLE_DEADLINE) or "—"),
+                "display": str(index.data(ROLE_DEADLINE) or "—"),
+                "color": QColor(index.data(ROLE_DEADLINE_COLOR) or text_color.name()),
+                "allow_elide": True,
+            },
+            {
+                "label": "Подзадачи",
+                "value": str(index.data(ROLE_SUBTASKS) or 0),
+                "display": f"Подзадачи: {int(index.data(ROLE_SUBTASKS) or 0)}",
+                "color": text_color,
+                "allow_elide": False,
+            },
+            {
+                "label": "Приоритет",
+                "value": str(index.data(ROLE_PRIORITY) or "Обычный"),
+                "display": str(index.data(ROLE_PRIORITY) or "Обычный"),
+                "color": text_color,
+                "allow_elide": True,
+            },
         ]
         meta_row_rect = QRectF(left + 16, top + 52, card_rect.width() - 32, 30)
         section_rects = self._meta_section_rects(meta_row_rect)
@@ -214,25 +247,30 @@ class TaskCardDelegate(QStyledItemDelegate):
 
         for section_index, section in enumerate(sections):
             cell_rect = section_rects[section_index]
+            label_text = section["label"] if section["label"] != "Подзадачи" else ""
             label_rect = QRectF(cell_rect.left() + cell_padding_x, cell_rect.top(), max(0.0, cell_rect.width() - 2 * cell_padding_x), label_height)
             value_rect = QRectF(
                 cell_rect.left() + cell_padding_x,
-                cell_rect.top() + label_height + 2,
+                cell_rect.top() + (label_height + 2 if label_text else 0),
                 max(0.0, cell_rect.width() - 2 * cell_padding_x),
                 value_height,
             )
 
-            painter.setFont(label_font)
-            painter.setPen(meta_color)
-            painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, section["label"])
+            if label_text:
+                painter.setFont(label_font)
+                painter.setPen(meta_color)
+                painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label_text)
 
             painter.setFont(value_font)
             painter.setPen(section["color"])
-            elided_value = painter.fontMetrics().elidedText(
-                section["value"],
-                Qt.TextElideMode.ElideRight,
-                max(0, int(value_rect.width())),
-            )
+            if section["allow_elide"]:
+                elided_value = painter.fontMetrics().elidedText(
+                    section["display"],
+                    Qt.TextElideMode.ElideRight,
+                    max(0, int(value_rect.width())),
+                )
+            else:
+                elided_value = section["display"]
             painter.drawText(value_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_value)
 
         badge_x = card_rect.right() - 12
@@ -712,6 +750,7 @@ class TaskQtWindow(QMainWindow):
         self.tasks_list.quick_action_requested.connect(self._handle_quick_action)
         self.tasks_list.setMouseTracking(True)
         self.tasks_list.setAllColumnsShowFocus(True)
+        self.tasks_list.setWordWrap(False)
         self.tasks_list.setIndentation(26)
         self.tasks_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tasks_list.customContextMenuRequested.connect(self._show_task_context_menu)
@@ -759,6 +798,8 @@ class TaskQtWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.addWidget(QLabel("Карточка элемента", self))
         self.breadcrumbs_label = QLabel("—", self)
+        self.breadcrumbs_label.setWordWrap(False)
+        self.breadcrumbs_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         right_layout.addWidget(self.breadcrumbs_label)
 
         form = QFormLayout()
@@ -896,6 +937,16 @@ class TaskQtWindow(QMainWindow):
             root_item.setData(0, ROLE_SUBTASKS, total_subtasks)
             root_item.setData(0, ROLE_DONE, task.is_done)
             root_item.setData(0, ROLE_PRIORITY, priority_label)
+            root_item.setToolTip(
+                0,
+                "\n".join(
+                    [
+                        f"Срок: {deadline}",
+                        f"Подзадачи: {total_subtasks}",
+                        f"Приоритет: {priority_label}",
+                    ]
+                ),
+            )
             root_item.setFlags(root_item.flags() | Qt.ItemFlag.ItemIsEditable)
 
             badges = []
@@ -920,6 +971,16 @@ class TaskQtWindow(QMainWindow):
                 child.setData(0, ROLE_DONE, subtask.is_done)
                 child.setData(0, ROLE_PRIORITY, "Низкий")
                 child.setData(0, ROLE_DEADLINE_COLOR, TOKENS["colors"]["text_primary"])
+                child.setToolTip(
+                    0,
+                    "\n".join(
+                        [
+                            f"Срок: {child.data(0, ROLE_DEADLINE)}",
+                            "Подзадачи: 0",
+                            "Приоритет: Низкий",
+                        ]
+                    ),
+                )
                 child.setData(0, ROLE_BADGES, [("SUB", "#6A7A8D")])
                 child.setFlags(child.flags() | Qt.ItemFlag.ItemIsEditable)
                 root_item.addChild(child)

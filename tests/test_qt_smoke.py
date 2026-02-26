@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 try:
+    from PySide6.QtCore import QRectF
     from PySide6.QtWidgets import QApplication
 except ImportError as exc:  # pragma: no cover - environment guard
     pytest.skip(f"PySide6 runtime unavailable: {exc}", allow_module_level=True)
@@ -17,6 +18,7 @@ from app.main_qt import (
     ROLE_SUBTASKS,
     SELECTED_TEXT_CONTRAST,
     GraphEdgeItem,
+    TaskCardDelegate,
     TaskGraphDialog,
     TaskQtWindow,
 )
@@ -153,6 +155,27 @@ def test_qt_selected_row_text_contrast_smoke(app_instance, tmp_path):
     assert window.tasks_list.currentItem() is not None
 
     window.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "expect_wrapped"),
+    [
+        (280, True),
+        (320, True),
+        (480, False),
+    ],
+)
+def test_task_meta_layout_breakpoints(width, expect_wrapped):
+    delegate = TaskCardDelegate()
+    rects = delegate._meta_section_rects(QRectF(0, 0, width, 30))
+
+    assert len(rects) == 3
+    if expect_wrapped:
+        assert rects[0].top() == rects[1].top()
+        assert rects[2].top() > rects[0].top()
+        assert rects[2].width() == pytest.approx(width)
+    else:
+        assert rects[0].top() == rects[1].top() == rects[2].top()
 
 
 def test_main_window_restores_active_tab(app_instance, tmp_path):
