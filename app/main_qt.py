@@ -952,6 +952,17 @@ class TaskQtWindow(QMainWindow):
         self.reminder_input.setDisplayFormat("yyyy-MM-dd HH:mm")
         form.addRow("Напоминание", self.reminder_input)
 
+        self.has_due_checkbox = QCheckBox("Установить дедлайн", self)
+        self.has_due_checkbox.setChecked(False)
+        form.addRow("Дедлайн", self.has_due_checkbox)
+
+        self.due_input = QDateTimeEdit(self)
+        self.due_input.setCalendarPopup(True)
+        self.due_input.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.due_input.setEnabled(False)
+        self.has_due_checkbox.toggled.connect(self.due_input.setEnabled)
+        form.addRow("Дата и время дедлайна", self.due_input)
+
         self.note_input = QPlainTextEdit(self)
         self.note_input.setPlaceholderText("Заметка")
         self.note_input.setFixedHeight(140)
@@ -966,6 +977,10 @@ class TaskQtWindow(QMainWindow):
         clear_reminder_btn = QPushButton("Очистить напоминание", self)
         clear_reminder_btn.clicked.connect(self.clear_selected_reminder)
         card_actions.addWidget(clear_reminder_btn)
+
+        clear_due_btn = QPushButton("Очистить дедлайн", self)
+        clear_due_btn.clicked.connect(self.clear_selected_due)
+        card_actions.addWidget(clear_due_btn)
 
         refresh_btn = QPushButton("Обновить", self)
         refresh_btn.clicked.connect(self.refresh_tasks)
@@ -1008,6 +1023,9 @@ class TaskQtWindow(QMainWindow):
 
         try:
             payload = operation()
+        except task_service.DeadlineValidationError as exc:
+            QMessageBox.warning(self, "Ошибка валидации", str(exc))
+            return False
         except Exception:
             QMessageBox.warning(self, "Ошибка", error_message)
             return False
@@ -1249,6 +1267,8 @@ class TaskQtWindow(QMainWindow):
         self.status_checkbox.setText("Элемент выполнен")
         self.status_checkbox.setChecked(False)
         self.reminder_input.setDateTime(datetime.now())
+        self.has_due_checkbox.setChecked(False)
+        self.due_input.setDateTime(datetime.now())
         self.note_input.setPlainText("")
         self.priority_input.setCurrentText("Средний")
 
@@ -1273,6 +1293,8 @@ class TaskQtWindow(QMainWindow):
             self.status_checkbox.setChecked(subtask.is_done)
             self.note_input.setPlainText(subtask.note or "")
             self.reminder_input.setDateTime(subtask.reminder_datetime or datetime.now())
+            self.has_due_checkbox.setChecked(subtask.due_datetime is not None)
+            self.due_input.setDateTime(subtask.due_datetime or datetime.now())
             self.priority_input.setCurrentText(_priority_to_label(subtask.priority))
             return
 
@@ -1286,6 +1308,8 @@ class TaskQtWindow(QMainWindow):
         self.status_checkbox.setChecked(task.is_done)
         self.note_input.setPlainText(task.note or "")
         self.reminder_input.setDateTime(task.reminder_datetime or datetime.now())
+        self.has_due_checkbox.setChecked(task.due_datetime is not None)
+        self.due_input.setDateTime(task.due_datetime or datetime.now())
         self.priority_input.setCurrentText(_priority_to_label(task.priority))
 
     def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -1353,6 +1377,7 @@ class TaskQtWindow(QMainWindow):
             return
 
         reminder = self.reminder_input.dateTime().toPython()
+        due_datetime = self.due_input.dateTime().toPython() if self.has_due_checkbox.isChecked() else None
         note = self.note_input.toPlainText()
         done = self.status_checkbox.isChecked()
         priority = _label_to_priority(self.priority_input.currentText())
@@ -1366,6 +1391,7 @@ class TaskQtWindow(QMainWindow):
                     title=title,
                     is_done=done,
                     reminder_datetime=reminder,
+                    due_datetime=due_datetime,
                     note=note,
                     priority=priority,
                 ),
@@ -1385,6 +1411,7 @@ class TaskQtWindow(QMainWindow):
                 title=title,
                 is_done=done,
                 reminder_datetime=reminder,
+                due_datetime=due_datetime,
                 note=note,
                 priority=priority,
             ),
@@ -1464,6 +1491,24 @@ class TaskQtWindow(QMainWindow):
             return
 
         task_service.update_task(self.db_path, item_ref.id, reminder_datetime=None)
+        self.refresh_tasks()
+        self._select_task_in_tree(item_ref.id)
+
+    def clear_selected_due(self) -> None:
+        item_ref = self._selected_item_ref()
+        if item_ref is None:
+            QMessageBox.information(self, "Выберите задачу", "Выберите задачу или подзадачу для обновления")
+            return
+        if item_ref.kind == ItemKind.SUBTASK:
+            updated = task_service.update_subtask(self.db_path, item_ref.id, due_datetime=None)
+            if not updated:
+                QMessageBox.warning(self, "Ошибка", "Не удалось очистить дедлайн подзадачи")
+                return
+            self.refresh_tasks()
+            self._focus_subtask_in_tree(updated.task_id, updated.id)
+            return
+
+        task_service.update_task(self.db_path, item_ref.id, due_datetime=None)
         self.refresh_tasks()
         self._select_task_in_tree(item_ref.id)
 

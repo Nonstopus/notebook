@@ -596,3 +596,43 @@ def test_board_items_are_filtered_by_board_id(tmp_path):
 
     assert [item.task_id for item in storage.list_board_items(db_path, board_a.id)] == [task_one.id]
     assert [item.task_id for item in storage.list_board_items(db_path, board_b.id)] == [task_two.id]
+
+
+def test_subtask_due_datetime_can_be_before_or_equal_parent_due(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent_due = datetime(2026, 1, 10, 18, 0, 0)
+    parent = storage.create_task(db_path, "Родитель", due_datetime=parent_due)
+
+    earlier = storage.create_subtask(db_path, parent.id, "Раньше", due_datetime=datetime(2026, 1, 10, 17, 0, 0))
+    equal = storage.create_subtask(db_path, parent.id, "Равно", due_datetime=parent_due)
+
+    assert earlier is not None
+    assert equal is not None
+    assert earlier.due_datetime < parent_due
+    assert equal.due_datetime == parent_due
+
+
+def test_subtask_due_datetime_cannot_be_later_than_parent_due(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent_due = datetime(2026, 1, 10, 18, 0, 0)
+    parent = storage.create_task(db_path, "Родитель", due_datetime=parent_due)
+
+    try:
+        storage.create_subtask(db_path, parent.id, "Позже", due_datetime=datetime(2026, 1, 10, 19, 0, 0))
+    except storage.DeadlineValidationError as exc:
+        assert "не может быть позже" in str(exc)
+    else:
+        raise AssertionError("Expected DeadlineValidationError for subtask due datetime")
+
+
+def test_update_parent_due_datetime_rejects_conflicting_subtasks(tmp_path):
+    db_path = temp_db(tmp_path)
+    parent = storage.create_task(db_path, "Родитель", due_datetime=datetime(2026, 1, 10, 18, 0, 0))
+    storage.create_subtask(db_path, parent.id, "Подзадача", due_datetime=datetime(2026, 1, 10, 17, 30, 0))
+
+    try:
+        storage.update_task(db_path, parent.id, due_datetime=datetime(2026, 1, 10, 17, 0, 0))
+    except storage.DeadlineValidationError as exc:
+        assert "Нельзя установить дедлайн задачи раньше" in str(exc)
+    else:
+        raise AssertionError("Expected DeadlineValidationError for parent due datetime update")
