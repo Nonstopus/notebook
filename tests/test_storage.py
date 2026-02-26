@@ -34,6 +34,60 @@ def test_subtasks_and_progress(tmp_path):
 
 
 
+
+
+def test_task_priority_create_and_update(tmp_path):
+    db_path = temp_db(tmp_path)
+
+    created = storage.create_task(db_path, "Приоритетная", priority="high")
+    assert created.priority == "high"
+
+    updated = storage.update_task(db_path, created.id, priority="critical")
+    assert updated is not None
+    assert updated.priority == "critical"
+
+
+def test_subtask_priority_create_and_update(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Родитель")
+
+    created = storage.create_subtask(db_path, task.id, "Подзадача", priority="low")
+    assert created is not None
+    assert created.priority == "low"
+
+    updated = storage.update_subtask(db_path, created.id, priority="medium")
+    assert updated is not None
+    assert updated.priority == "medium"
+
+
+def test_priority_validation_rejects_invalid_values(tmp_path):
+    db_path = temp_db(tmp_path)
+    task = storage.create_task(db_path, "Обычная")
+
+    try:
+        storage.create_task(db_path, "Плохой приоритет", priority="urgent")
+    except storage.PriorityValidationError:
+        pass
+    else:
+        raise AssertionError("Expected PriorityValidationError for invalid task priority")
+
+    try:
+        storage.update_task(db_path, task.id, priority="urgent")
+    except storage.PriorityValidationError:
+        pass
+    else:
+        raise AssertionError("Expected PriorityValidationError for invalid task priority update")
+
+    subtask = storage.create_subtask(db_path, task.id, "Подзадача")
+    assert subtask is not None
+    try:
+        storage.update_subtask(db_path, subtask.id, priority="urgent")
+    except storage.PriorityValidationError:
+        pass
+    else:
+        raise AssertionError("Expected PriorityValidationError for invalid subtask priority update")
+
+
 def test_reorder_subtask_moves_item_with_clamped_position(tmp_path):
     db_path = temp_db(tmp_path)
     task = storage.create_task(db_path, "Основная")
@@ -149,6 +203,7 @@ def test_migrate_adds_due_datetime_column(tmp_path):
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
 
     assert "due_datetime" in columns
+    assert "priority" in columns
 
 
 def test_list_tasks_due_on_date_filter(tmp_path):

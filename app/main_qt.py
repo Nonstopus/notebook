@@ -6,7 +6,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .models import ItemKind, TreeItemRef
+from .models import (
+    PRIORITY_CRITICAL,
+    PRIORITY_HIGH,
+    PRIORITY_LOW,
+    PRIORITY_MEDIUM,
+    ItemKind,
+    TreeItemRef,
+)
 from .services import tasks as task_service
 from .storage import DB_NAME
 
@@ -105,6 +112,22 @@ def contrast_ratio(foreground: str, background: str) -> float:
 
 
 SELECTED_TEXT_CONTRAST = contrast_ratio(SELECTED_TEXT_COLOR, SELECTED_BG_COLOR)
+
+PRIORITY_LABELS = {
+    PRIORITY_LOW: "Низкий",
+    PRIORITY_MEDIUM: "Средний",
+    PRIORITY_HIGH: "Высокий",
+    PRIORITY_CRITICAL: "Критичный",
+}
+LABEL_TO_PRIORITY = {label: value for value, label in PRIORITY_LABELS.items()}
+
+
+def _priority_to_label(priority: str) -> str:
+    return PRIORITY_LABELS.get(priority, PRIORITY_LABELS[PRIORITY_MEDIUM])
+
+
+def _label_to_priority(label: str) -> str:
+    return LABEL_TO_PRIORITY.get(label, PRIORITY_MEDIUM)
 
 
 class TaskCardDelegate(QStyledItemDelegate):
@@ -921,7 +944,7 @@ class TaskQtWindow(QMainWindow):
         form.addRow("Статус", self.status_checkbox)
 
         self.priority_input = QComboBox(self)
-        self.priority_input.addItems(["Низкий", "Средний", "Высокий", "Критичный"])
+        self.priority_input.addItems(list(PRIORITY_LABELS.values()))
         form.addRow("Приоритет", self.priority_input)
 
         self.reminder_input = QDateTimeEdit(self)
@@ -1063,7 +1086,7 @@ class TaskQtWindow(QMainWindow):
                     deadline_color = TOKENS["colors"]["danger"]
                 else:
                     deadline = due_value.strftime("%d.%m %H:%M")
-            priority_label = "Высокий" if deadline.startswith("Просрочено") else ("Средний" if due_value else "Низкий")
+            priority_label = _priority_to_label(task.priority)
             meta = f"ID #{task.id} · {done_subtasks}/{total_subtasks} выполнено"
 
             root_item = QTreeWidgetItem([task.title])
@@ -1107,7 +1130,8 @@ class TaskQtWindow(QMainWindow):
                 child.setData(0, ROLE_DEADLINE, child_deadline.strftime("%d.%m %H:%M") if child_deadline else "—")
                 child.setData(0, ROLE_SUBTASKS, 0)
                 child.setData(0, ROLE_DONE, subtask.is_done)
-                child.setData(0, ROLE_PRIORITY, "Низкий")
+                child_priority_label = _priority_to_label(subtask.priority)
+                child.setData(0, ROLE_PRIORITY, child_priority_label)
                 child.setData(0, ROLE_DEADLINE_COLOR, TOKENS["colors"]["text_primary"])
                 child.setToolTip(
                     0,
@@ -1115,7 +1139,7 @@ class TaskQtWindow(QMainWindow):
                         [
                             f"Срок: {child.data(0, ROLE_DEADLINE)}",
                             "Подзадачи: 0",
-                            "Приоритет: Низкий",
+                            f"Приоритет: {child_priority_label}",
                         ]
                     ),
                 )
@@ -1249,7 +1273,7 @@ class TaskQtWindow(QMainWindow):
             self.status_checkbox.setChecked(subtask.is_done)
             self.note_input.setPlainText(subtask.note or "")
             self.reminder_input.setDateTime(subtask.reminder_datetime or datetime.now())
-            self.priority_input.setCurrentText("Низкий")
+            self.priority_input.setCurrentText(_priority_to_label(subtask.priority))
             return
 
         task = self._selected_task()
@@ -1262,7 +1286,7 @@ class TaskQtWindow(QMainWindow):
         self.status_checkbox.setChecked(task.is_done)
         self.note_input.setPlainText(task.note or "")
         self.reminder_input.setDateTime(task.reminder_datetime or datetime.now())
-        self.priority_input.setCurrentText(self.tasks_list.currentItem().data(0, ROLE_PRIORITY) or "Средний")
+        self.priority_input.setCurrentText(_priority_to_label(task.priority))
 
     def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if self._is_refreshing_tree or column != 0:
@@ -1331,6 +1355,7 @@ class TaskQtWindow(QMainWindow):
         reminder = self.reminder_input.dateTime().toPython()
         note = self.note_input.toPlainText()
         done = self.status_checkbox.isChecked()
+        priority = _label_to_priority(self.priority_input.currentText())
 
         if item_ref.kind == ItemKind.SUBTASK:
             self._run_ui_flow(
@@ -1342,6 +1367,7 @@ class TaskQtWindow(QMainWindow):
                     is_done=done,
                     reminder_datetime=reminder,
                     note=note,
+                    priority=priority,
                 ),
                 on_success=lambda updated: (
                     self.refresh_tasks(),
@@ -1360,6 +1386,7 @@ class TaskQtWindow(QMainWindow):
                 is_done=done,
                 reminder_datetime=reminder,
                 note=note,
+                priority=priority,
             ),
             on_success=lambda updated: (self.refresh_tasks(), self._select_task_in_tree(updated.id)),
             error_message="Не удалось сохранить задачу. Проверьте данные и попробуйте снова.",

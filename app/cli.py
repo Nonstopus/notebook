@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+from .models import ALLOWED_PRIORITIES
 from .storage import DB_NAME
 from .services import tasks as task_service
 
@@ -20,6 +21,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--due-datetime",
         help="Дедлайн в формате YYYY-MM-DD HH:MM",
     )
+    add_parser.add_argument("--priority", choices=ALLOWED_PRIORITIES, default="medium", help="Приоритет")
+
+    update_parser = subparsers.add_parser("update", help="Обновить задачу")
+    update_parser.add_argument("task_id", type=int, help="ID задачи")
+    update_parser.add_argument("--title", help="Новое название задачи")
+    update_parser.add_argument("--priority", choices=ALLOWED_PRIORITIES, help="Приоритет")
 
     list_parser = subparsers.add_parser("list", help="Показать все задачи")
     list_parser.add_argument("--search", help="Строка для поиска по заголовку и заметке")
@@ -69,8 +76,25 @@ def main() -> None:
             except ValueError:
                 print("Неверный формат --due-datetime. Используйте YYYY-MM-DD HH:MM")
                 return
-        task = task_service.create_task(args.db, title=args.title, reminder_datetime=due_datetime)
+        task = task_service.create_task(
+            args.db,
+            title=args.title,
+            reminder_datetime=due_datetime,
+            priority=args.priority,
+        )
         print(f"Добавлено: #{task.id} {task.title}")
+        return
+
+
+    if args.command == "update":
+        if args.title is None and args.priority is None:
+            print("Укажите хотя бы один параметр: --title или --priority")
+            return
+        task = task_service.update_task(args.db, args.task_id, title=args.title, priority=args.priority)
+        if not task:
+            print(f"Задача #{args.task_id} не найдена")
+            return
+        print(f"Обновлено: #{task.id} {task.title}")
         return
 
     if args.command == "list":
