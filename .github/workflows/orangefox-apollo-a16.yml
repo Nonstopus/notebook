@@ -1,0 +1,159 @@
+name: OrangeFox Apollo Android 16
+
+on:
+  push:
+    branches:
+      - orangefox-apollo-build
+    paths:
+      - '.github/workflows/orangefox-apollo-a16.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 4096
+          swap-size-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git git-lfs repo aria2 bc bison build-essential ccache curl flex \
+            g++-multilib gcc-multilib gnupg gperf imagemagick lib32ncurses-dev \
+            lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses-dev \
+            libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev
+          git lfs install
+          git config --global user.name github-actions
+          git config --global user.email github-actions@github.com
+          df -h
+          free -h
+
+      - name: Sync OrangeFox 16 sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ofx-sync"
+          cd "$GITHUB_WORKSPACE/ofx-sync"
+          git clone --depth=1 https://github.com/OrangeFox16/sync.git sync
+          cd sync
+          ./orangefox_sync.sh --branch 16.0 --path "$GITHUB_WORKSPACE/fox_16.0" 2>&1 | tee "$GITHUB_WORKSPACE/sync.log"
+          df -h
+
+      - name: Clone exact Apollo tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/fox_16.0"
+          rm -rf device/xiaomi/apollo
+          mkdir -p device/xiaomi/apollo
+          cd device/xiaomi/apollo
+          git init
+          git remote add origin https://github.com/MurtazaKolachi/android_device_xiaomi_umi_TWRP.git
+          git fetch --depth=1 origin 6ec913417efa160a9bfe9061b95c6cfeff1faa58
+          git checkout --detach FETCH_HEAD
+          git rev-parse HEAD
+
+      - name: Adapt device tree to Android 16 build system
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/fox_16.0/device/xiaomi/apollo"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('BoardConfig.mk')
+          s = p.read_text()
+
+          old = '''ifdef DECRYPT_PLATFORM_VERSION
+          PLATFORM_VERSION := $(DECRYPT_PLATFORM_VERSION)
+          else
+          PLATFORM_VERSION := 16.2.0
+          endif
+          PLATFORM_VERSION_LAST_STABLE := $(PLATFORM_VERSION)
+          '''
+          s = s.replace(old, '')
+
+          if 'TW_USE_FBEV2 := true' not in s:
+              s += '''\n# Android 16 FBEv2\nTW_USE_FBEV2 := true\nTW_INCLUDE_FBE := true\n'''
+
+          p.write_text(s)
+
+          p = Path('fox_apollo.mk')
+          s = p.read_text()
+          s = '\n'.join(line for line in s.splitlines() if not line.strip().startswith('FOX_VERSION :=')) + '\n'
+          if 'OF_FIX_DECRYPTION_ON_DATA_MEDIA' not in s:
+              s += '\nOF_FIX_DECRYPTION_ON_DATA_MEDIA := 1\n'
+          p.write_text(s)
+          PY
+
+          echo '--- crypto flags ---'
+          grep -nE 'FBE|FSCRYPT|CRYPTO|METADATA|PLATFORM_VERSION|KEYMASTER' BoardConfig.mk || true
+          echo '--- OrangeFox flags ---'
+          grep -nE 'DECRYPT|KEYMASTER|FOX_VERSION' fox_apollo.mk || true
+
+      - name: Build recovery
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$GITHUB_WORKSPACE/fox_16.0"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export FOX_BUILD_DEVICE=apollo
+          export OF_FORCE_PREBUILT_KERNEL=1
+          export OF_FIX_DECRYPTION_ON_DATA_MEDIA=1
+          export OF_DEFAULT_KEYMASTER_VERSION=4.0
+          source build/envsetup.sh
+
+          if lunch twrp_apollo-bp2a-eng; then
+            echo 'Using twrp_apollo-bp2a-eng'
+          elif lunch twrp_apollo-eng; then
+            echo 'Using twrp_apollo-eng'
+          else
+            echo 'No valid lunch target' >&2
+            exit 1
+          fi
+
+          mka adbd recoveryimage 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Collect files
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp -v "$GITHUB_WORKSPACE/sync.log" "$GITHUB_WORKSPACE/artifacts/" 2>/dev/null || true
+          cp -v "$GITHUB_WORKSPACE/build.log" "$GITHUB_WORKSPACE/artifacts/" 2>/dev/null || true
+          OUT="$GITHUB_WORKSPACE/fox_16.0/out/target/product/apollo"
+          if [ -d "$OUT" ]; then
+            find "$OUT" -maxdepth 1 -type f \( -name 'recovery.img' -o -name 'OrangeFox*.img' -o -name 'OrangeFox*.zip' \) -exec cp -v {} "$GITHUB_WORKSPACE/artifacts/" \;
+          fi
+          cp -v "$GITHUB_WORKSPACE/fox_16.0/device/xiaomi/apollo/BoardConfig.mk" "$GITHUB_WORKSPACE/artifacts/BoardConfig.used.mk" 2>/dev/null || true
+          cp -v "$GITHUB_WORKSPACE/fox_16.0/device/xiaomi/apollo/fox_apollo.mk" "$GITHUB_WORKSPACE/artifacts/fox_apollo.used.mk" 2>/dev/null || true
+          df -h || true
+          ls -lah "$GITHUB_WORKSPACE/artifacts" || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangefox-apollo-a16
+          path: artifacts/
+          retention-days: 2
+          if-no-files-found: warn
