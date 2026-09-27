@@ -79,22 +79,27 @@ jobs:
           cd "$GITHUB_WORKSPACE/fox_16.0/device/xiaomi/apollo"
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
+          Path("AndroidProducts.mk").write_text("""PRODUCT_MAKEFILES := \\
+              $(LOCAL_DIR)/twrp_apollo.mk
+
+          COMMON_LUNCH_CHOICES := \\
+              twrp_apollo-ap2a-eng
+          """)
 
           p = Path('BoardConfig.mk')
           s = p.read_text()
-
-          old = '''ifdef DECRYPT_PLATFORM_VERSION
-          PLATFORM_VERSION := $(DECRYPT_PLATFORM_VERSION)
-          else
-          PLATFORM_VERSION := 16.2.0
-          endif
-          PLATFORM_VERSION_LAST_STABLE := $(PLATFORM_VERSION)
-          '''
-          s = s.replace(old, '')
-
+          s = re.sub(r'ifdef DECRYPT_PLATFORM_VERSION\nPLATFORM_VERSION := \$\(DECRYPT_PLATFORM_VERSION\)\nelse\nPLATFORM_VERSION := 16\.2\.0\nendif\nPLATFORM_VERSION_LAST_STABLE := \$\(PLATFORM_VERSION\)\n', '', s)
           if 'TW_USE_FBEV2 := true' not in s:
-              s += '''\n# Android 16 FBEv2\nTW_USE_FBEV2 := true\nTW_INCLUDE_FBE := true\n'''
+              s += '\n# Android 16 FBEv2\nTW_USE_FBEV2 := true\n'
+          if 'TW_INCLUDE_FBE := true' not in s:
+              s += 'TW_INCLUDE_FBE := true\n'
+          p.write_text(s)
 
+          p = Path('device.mk')
+          s = p.read_text()
+          s = re.sub(r'\nTWRP_REQUIRED_MODULES \+= miui_prebuilt \\\n\s*magisk_prebuilt\s*\n?', '\n', s)
           p.write_text(s)
 
           p = Path('fox_apollo.mk')
@@ -103,10 +108,21 @@ jobs:
           if 'OF_FIX_DECRYPTION_ON_DATA_MEDIA' not in s:
               s += '\nOF_FIX_DECRYPTION_ON_DATA_MEDIA := 1\n'
           p.write_text(s)
+
+          p = Path('vendorsetup.sh')
+          s = p.read_text()
+          s = s.replace('export OF_USE_MAGISKBOOT=1', '# disabled for Android 16: export OF_USE_MAGISKBOOT=1')
+          s = s.replace('export OF_USE_MAGISKBOOT_FOR_ALL_PATCHES=1', '# disabled for Android 16: export OF_USE_MAGISKBOOT_FOR_ALL_PATCHES=1')
+          s = s.replace('export OF_USE_NEW_MAGISKBOOT=1', '# disabled for Android 16: export OF_USE_NEW_MAGISKBOOT=1')
+          p.write_text(s)
           PY
 
+          echo '--- AndroidProducts.mk ---'
+          cat AndroidProducts.mk
           echo '--- crypto flags ---'
           grep -nE 'FBE|FSCRYPT|CRYPTO|METADATA|PLATFORM_VERSION|KEYMASTER' BoardConfig.mk || true
+          echo '--- legacy addon refs ---'
+          grep -nE 'magisk_prebuilt|miui_prebuilt|MAGISKBOOT' device.mk vendorsetup.sh || true
           echo '--- OrangeFox flags ---'
           grep -nE 'DECRYPT|KEYMASTER|FOX_VERSION' fox_apollo.mk || true
 
@@ -121,16 +137,7 @@ jobs:
           export OF_FIX_DECRYPTION_ON_DATA_MEDIA=1
           export OF_DEFAULT_KEYMASTER_VERSION=4.0
           source build/envsetup.sh
-
-          if lunch twrp_apollo-bp2a-eng; then
-            echo 'Using twrp_apollo-bp2a-eng'
-          elif lunch twrp_apollo-eng; then
-            echo 'Using twrp_apollo-eng'
-          else
-            echo 'No valid lunch target' >&2
-            exit 1
-          fi
-
+          lunch twrp_apollo-ap2a-eng
           mka adbd recoveryimage 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       - name: Collect files
@@ -146,6 +153,7 @@ jobs:
           fi
           cp -v "$GITHUB_WORKSPACE/fox_16.0/device/xiaomi/apollo/BoardConfig.mk" "$GITHUB_WORKSPACE/artifacts/BoardConfig.used.mk" 2>/dev/null || true
           cp -v "$GITHUB_WORKSPACE/fox_16.0/device/xiaomi/apollo/fox_apollo.mk" "$GITHUB_WORKSPACE/artifacts/fox_apollo.used.mk" 2>/dev/null || true
+          cp -v "$GITHUB_WORKSPACE/fox_16.0/device/xiaomi/apollo/AndroidProducts.mk" "$GITHUB_WORKSPACE/artifacts/AndroidProducts.used.mk" 2>/dev/null || true
           df -h || true
           ls -lah "$GITHUB_WORKSPACE/artifacts" || true
 
