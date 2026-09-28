@@ -1,0 +1,131 @@
+name: OrangeFox Apollo A16 fast
+
+on:
+  push:
+    branches: [orangefox-apollo-build]
+    paths: ['.github/workflows/orangefox-apollo-a16-fast.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free space
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Maximize space
+        uses: easimon/maximize-build-space@master
+
+      - name: Configure ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          create-symlink: true
+
+      - name: Setup ZRAM
+        run: |
+          sudo apt install linux-modules-extra-$(uname -r) zram-tools -y
+          sudo modprobe zram
+          sudo sed -i 's/^#PERCENT=50/PERCENT=90/' /etc/default/zramswap
+          sudo sed -i 's/^#PRIORITY=100/PRIORITY=1000/' /etc/default/zramswap
+          sudo systemctl restart zramswap
+          zramctl
+
+      - name: Setup environment
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update
+          sudo apt install repo -y
+          git config --global user.name github-actions
+          git config --global user.email github-actions@github.com
+
+      - name: Sync TWRP 14
+        run: |
+          repo init -u https://github.com/nebrassy/platform_manifest_twrp_aosp.git -b twrp-14 --depth=1
+          repo sync
+
+      - name: Sync OrangeFox 14.1
+        run: |
+          git clone https://gitlab.com/OrangeFox/sync.git -b master ofx-sync
+          WORKINGDIR=$(pwd)
+          cd ofx-sync
+          ./orangefox_sync.sh --branch 14.1 --path "$WORKINGDIR"
+          cd "$WORKINGDIR"
+
+      - name: Clone Apollo tree
+        run: |
+          rm -rf device/xiaomi/apollo
+          git clone https://github.com/MurtazaKolachi/android_device_xiaomi_umi_TWRP.git device/xiaomi/apollo
+          cd device/xiaomi/apollo
+          git checkout 6ec913417efa160a9bfe9061b95c6cfeff1faa58
+
+      - name: Adapt Apollo
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd device/xiaomi/apollo
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          Path('AndroidProducts.mk').write_text('''PRODUCT_MAKEFILES := \\\n              $(LOCAL_DIR)/twrp_apollo.mk\n\nCOMMON_LUNCH_CHOICES := \\\n              twrp_apollo-ap2a-eng\n''')
+          p=Path('BoardConfig.mk'); s=p.read_text()
+          s=re.sub(r'ifdef DECRYPT_PLATFORM_VERSION\nPLATFORM_VERSION := \$\(DECRYPT_PLATFORM_VERSION\)\nelse\nPLATFORM_VERSION := 16\.2\.0\nendif\nPLATFORM_VERSION_LAST_STABLE := \$\(PLATFORM_VERSION\)\n','',s)
+          if 'PLATFORM_VERSION := 99.87.36' not in s:
+              s += '\nPLATFORM_VERSION := 99.87.36\nPLATFORM_VERSION_LAST_STABLE := $(PLATFORM_VERSION)\n'
+          for line in ['TW_USE_FBEV2 := true','TW_INCLUDE_FBE := true','TW_INCLUDE_OMAPI := true','TW_USE_FSCRYPT_POLICY := 2']:
+              if line not in s: s += line+'\n'
+          p.write_text(s)
+          p=Path('device.mk'); s=p.read_text()
+          s=re.sub(r'\nTWRP_REQUIRED_MODULES \+= miui_prebuilt \\\n\s*magisk_prebuilt\s*\n?','\n',s)
+          p.write_text(s)
+          p=Path('fox_apollo.mk'); s=p.read_text()
+          s='\n'.join(x for x in s.splitlines() if not x.strip().startswith('FOX_VERSION :='))+'\n'
+          if 'OF_FIX_DECRYPTION_ON_DATA_MEDIA' not in s: s += 'OF_FIX_DECRYPTION_ON_DATA_MEDIA := 1\n'
+          p.write_text(s)
+          p=Path('vendorsetup.sh')
+          if p.exists():
+              s=p.read_text()
+              for v in ['export OF_USE_MAGISKBOOT=1','export OF_USE_MAGISKBOOT_FOR_ALL_PATCHES=1','export OF_USE_NEW_MAGISKBOOT=1']:
+                  s=s.replace(v,'# disabled for A16 build')
+              p.write_text(s)
+          PY
+          rm -rf ../../external/magisk-prebuilt ../../external/miui-prebuilt 2>/dev/null || true
+
+      - name: Build recovery
+        run: |
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export CCACHE_DIR=.ccache
+          export CCACHE_EXEC=$(command -v ccache)
+          export CCACHE_MAXSIZE=5G
+          export USE_CCACHE=1
+          export FOX_BUILD_DEVICE=apollo
+          export OF_FORCE_PREBUILT_KERNEL=1
+          export OF_FIX_DECRYPTION_ON_DATA_MEDIA=1
+          export OF_DEFAULT_KEYMASTER_VERSION=4.0
+          lunch twrp_apollo-ap2a-eng
+          mka adbd recoveryimage
+
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p artifacts-fast
+          OUT=out/target/product/apollo
+          if [ -d "$OUT" ]; then
+            find "$OUT" -maxdepth 1 -type f \( -name 'recovery.img' -o -name 'OrangeFox*.img' -o -name 'OrangeFox*.zip' \) -exec cp -v {} artifacts-fast/ \;
+          fi
+          ls -lah artifacts-fast || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangefox-apollo-a16-fast
+          path: artifacts-fast/
+          if-no-files-found: warn
+          retention-days: 2
