@@ -44,8 +44,6 @@ jobs:
           git lfs install
           git config --global user.name github-actions
           git config --global user.email github-actions@github.com
-          df -h
-          free -h
 
       - name: Sync OrangeFox 16 sources
         shell: bash
@@ -70,7 +68,6 @@ jobs:
           git remote add origin https://github.com/MurtazaKolachi/android_device_xiaomi_umi_TWRP.git
           git fetch --depth=1 origin 6ec913417efa160a9bfe9061b95c6cfeff1faa58
           git checkout --detach FETCH_HEAD
-          git rev-parse HEAD
 
       - name: Adapt device tree to Android 16 build system
         shell: bash
@@ -109,22 +106,29 @@ jobs:
               s += '\nOF_FIX_DECRYPTION_ON_DATA_MEDIA := 1\n'
           p.write_text(s)
 
+          # This old tree carries R11-era Magisk flags.  Android 16 does not need
+          # them for building recovery and Android's current build system rejects
+          # the legacy external/magisk-prebuilt Android.mk.
           p = Path('vendorsetup.sh')
           s = p.read_text()
-          s = s.replace('export OF_USE_MAGISKBOOT=1', '# disabled for Android 16: export OF_USE_MAGISKBOOT=1')
-          s = s.replace('export OF_USE_MAGISKBOOT_FOR_ALL_PATCHES=1', '# disabled for Android 16: export OF_USE_MAGISKBOOT_FOR_ALL_PATCHES=1')
-          s = s.replace('export OF_USE_NEW_MAGISKBOOT=1', '# disabled for Android 16: export OF_USE_NEW_MAGISKBOOT=1')
+          s = s.replace('export OF_USE_MAGISKBOOT=1', '# disabled on fox_16.0')
+          s = s.replace('export OF_USE_MAGISKBOOT_FOR_ALL_PATCHES=1', '# disabled on fox_16.0')
+          s = s.replace('export OF_USE_NEW_MAGISKBOOT=1', '# disabled on fox_16.0')
           p.write_text(s)
           PY
 
-          echo '--- AndroidProducts.mk ---'
+          echo '--- product ---'
           cat AndroidProducts.mk
-          echo '--- crypto flags ---'
-          grep -nE 'FBE|FSCRYPT|CRYPTO|METADATA|PLATFORM_VERSION|KEYMASTER' BoardConfig.mk || true
-          echo '--- legacy addon refs ---'
-          grep -nE 'magisk_prebuilt|miui_prebuilt|MAGISKBOOT' device.mk vendorsetup.sh || true
-          echo '--- OrangeFox flags ---'
-          grep -nE 'DECRYPT|KEYMASTER|FOX_VERSION' fox_apollo.mk || true
+          echo '--- crypto ---'
+          grep -nE 'FBE|FSCRYPT|CRYPTO|METADATA|KEYMASTER' BoardConfig.mk || true
+
+      - name: Remove legacy addons incompatible with Android 16
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/fox_16.0"
+          rm -rf external/magisk-prebuilt external/miui-prebuilt
+          find external -maxdepth 2 -type f -name Android.mk | grep -Ei 'magisk|miui' || true
 
       - name: Build recovery
         shell: bash
