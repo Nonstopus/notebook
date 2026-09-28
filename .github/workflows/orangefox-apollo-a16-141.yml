@@ -1,0 +1,141 @@
+name: OrangeFox Apollo A16 via 14.1
+
+on:
+  push:
+    branches: [orangefox-apollo-build]
+    paths: ['.github/workflows/orangefox-apollo-a16-141.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git git-lfs repo bc bison build-essential ccache curl flex g++-multilib gcc-multilib gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
+          git lfs install
+          git config --global user.name github-actions
+          git config --global user.email github-actions@github.com
+
+      - name: Sync TWRP 14 minimal
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE"
+          repo init -u https://github.com/nebrassy/platform_manifest_twrp_aosp.git -b twrp-14 --depth=1
+          repo sync -c --force-sync --optimized-fetch --prune --no-clone-bundle --no-tags -j2
+          df -h
+
+      - name: Overlay OrangeFox 14.1
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git clone --depth=1 https://gitlab.com/OrangeFox/sync.git ofx-sync-141
+          cd ofx-sync-141
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('orangefox_sync.sh')
+          s=p.read_text()
+          s=s.replace('repo sync;','repo sync -c --force-sync --optimized-fetch --prune --no-clone-bundle --no-tags -j2;')
+          p.write_text(s)
+          PY
+          ./orangefox_sync.sh --branch 14.1 --path "$GITHUB_WORKSPACE" 2>&1 | tee "$GITHUB_WORKSPACE/sync-141.log"
+          df -h
+
+      - name: Clone Apollo tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -rf device/xiaomi/apollo
+          git clone https://github.com/MurtazaKolachi/android_device_xiaomi_umi_TWRP.git device/xiaomi/apollo
+          cd device/xiaomi/apollo
+          git checkout 6ec913417efa160a9bfe9061b95c6cfeff1faa58
+
+      - name: Adapt Apollo for A16 decrypt
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/device/xiaomi/apollo"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          Path('AndroidProducts.mk').write_text('''PRODUCT_MAKEFILES := \\\n              $(LOCAL_DIR)/twrp_apollo.mk\n\nCOMMON_LUNCH_CHOICES := \\\n              twrp_apollo-ap2a-eng\n''')
+          p=Path('BoardConfig.mk'); s=p.read_text()
+          s=re.sub(r'ifdef DECRYPT_PLATFORM_VERSION\nPLATFORM_VERSION := \$\(DECRYPT_PLATFORM_VERSION\)\nelse\nPLATFORM_VERSION := 16\.2\.0\nendif\nPLATFORM_VERSION_LAST_STABLE := \$\(PLATFORM_VERSION\)\n','',s)
+          # Use the same high-version trick currently used by working A16 OrangeFox trees
+          if 'PLATFORM_VERSION := 99.87.36' not in s:
+              s += '\nPLATFORM_VERSION := 99.87.36\nPLATFORM_VERSION_LAST_STABLE := $(PLATFORM_VERSION)\n'
+          if 'TW_USE_FBEV2 := true' not in s: s+='TW_USE_FBEV2 := true\n'
+          if 'TW_INCLUDE_FBE := true' not in s: s+='TW_INCLUDE_FBE := true\n'
+          if 'TW_INCLUDE_OMAPI := true' not in s: s+='TW_INCLUDE_OMAPI := true\n'
+          if 'TW_USE_FSCRYPT_POLICY := 2' not in s: s+='TW_USE_FSCRYPT_POLICY := 2\n'
+          p.write_text(s)
+          p=Path('device.mk'); s=p.read_text()
+          s=re.sub(r'\nTWRP_REQUIRED_MODULES \+= miui_prebuilt \\\n\s*magisk_prebuilt\s*\n?','\n',s)
+          p.write_text(s)
+          p=Path('fox_apollo.mk'); s=p.read_text()
+          s='\n'.join(x for x in s.splitlines() if not x.strip().startswith('FOX_VERSION :='))+'\n'
+          if 'OF_FIX_DECRYPTION_ON_DATA_MEDIA' not in s: s+='OF_FIX_DECRYPTION_ON_DATA_MEDIA := 1\n'
+          p.write_text(s)
+          p=Path('vendorsetup.sh')
+          if p.exists():
+              s=p.read_text()
+              for v in ['export OF_USE_MAGISKBOOT=1','export OF_USE_MAGISKBOOT_FOR_ALL_PATCHES=1','export OF_USE_NEW_MAGISKBOOT=1']:
+                  s=s.replace(v,'# disabled for A16 build')
+              p.write_text(s)
+          PY
+          rm -rf "$GITHUB_WORKSPACE/external/magisk-prebuilt" "$GITHUB_WORKSPACE/external/miui-prebuilt" || true
+
+      - name: Build recovery
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$GITHUB_WORKSPACE"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export FOX_BUILD_DEVICE=apollo
+          export OF_FORCE_PREBUILT_KERNEL=1
+          export OF_FIX_DECRYPTION_ON_DATA_MEDIA=1
+          export OF_DEFAULT_KEYMASTER_VERSION=4.0
+          source build/envsetup.sh
+          lunch twrp_apollo-ap2a-eng
+          mka adbd recoveryimage -j2 2>&1 | tee "$GITHUB_WORKSPACE/build-141.log"
+
+      - name: Collect
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts-141"
+          cp "$GITHUB_WORKSPACE/sync-141.log" "$GITHUB_WORKSPACE/artifacts-141/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/build-141.log" "$GITHUB_WORKSPACE/artifacts-141/" 2>/dev/null || true
+          OUT="$GITHUB_WORKSPACE/out/target/product/apollo"
+          if [ -d "$OUT" ]; then
+            find "$OUT" -maxdepth 1 -type f \( -name 'recovery.img' -o -name 'OrangeFox*.img' -o -name 'OrangeFox*.zip' \) -exec cp -v {} "$GITHUB_WORKSPACE/artifacts-141/" \;
+          fi
+          df -h || true
+          ls -lah "$GITHUB_WORKSPACE/artifacts-141" || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangefox-apollo-a16-141
+          path: artifacts-141/
+          retention-days: 2
+          if-no-files-found: warn
