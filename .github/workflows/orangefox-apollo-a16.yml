@@ -95,6 +95,10 @@ jobs:
               p.write_text(s)
           PY
 
+          # Android 16 build system blocks legacy Android.mk files in these trees.
+          rm -rf "$GITHUB_WORKSPACE/fox_16.0/external/magisk-prebuilt"
+          rm -rf "$GITHUB_WORKSPACE/fox_16.0/external/miui-prebuilt"
+
       - name: Build recovery
         shell: bash
         run: |
